@@ -1,0 +1,14 @@
+Cenario;Teste;Verificar no app;Verificar na TV TCL;Verificar no Denon;Resultado esperado;Registro titulo ou ID redigido;Registro dados do app;Registro indicador da TCL;Registro formato Denon INFO;Resultado observado;Falha reproduzivel;Proximo passo
+T1;VOD SDR 1080p com AAC;Resolucao codec decoder estado e estabilidade;Indicador SDR;Entrada indicada em INFO;Imagem e audio estaveis;;;;;;;
+T2;HEVC 4K HDR10 com E-AC-3 5.1;3840x2160 HEVC PQ/ST2084 e faixa E-AC-3;Modo HDR exibido pela TCL;Formato de entrada exibido em INFO;Registrar imagem e audio sem travamentos;;;;;;;
+T3;VOD 4K Dolby Vision;Sinalizacao Dolby Vision reportada no stream;Indicador Dolby Vision da TCL;Formato de audio realmente recebido;Registrar se a TV ativa Dolby Vision;;;;;;;
+T4;Dolby Digital 5.1;Codec e canais da faixa selecionada;Saida digital configurada;Formato de entrada em INFO;Registrar formato real recebido;;;;;;;
+T5;Dolby Digital Plus 5.1;Codec e canais da faixa selecionada;Saida digital configurada;Formato de entrada em INFO;Registrar se DD+ chega ao Denon;;;;;;;
+T6;Dolby TrueHD ou Atmos lossless;Faixa selecionada e erro ou audio resultante;Imagem do conteudo;Formato de entrada em INFO;Registrar limite de ARC e testar faixa alternativa;;;;;;;
+T7;DTS 5.1 convencional;Codec e canais da faixa selecionada;Saida digital configurada;Formato de entrada em INFO;Registrar compatibilidade observada;;;;;;;
+T8;DTS-HD MA;Faixa selecionada e comportamento do player;Imagem do conteudo;Formato de entrada em INFO;Registrar limite do caminho ARC e alternativa disponivel;;;;;;;
+T9;Pausa retomada e busca em 10 e 30 minutos;Estado posicao buffering e quadros descartados;Imagem continua ativa;Audio sincronizado apos cada busca;Registrar estabilidade e limitacoes de seek;;;;;;;
+T10;Troca de audio e legenda;Faixa ativa e opcao de legenda desligada;Imagem continua ativa;Formato da nova faixa de audio;Troca funciona ou erro fica registrado;;;;;;;
+T11;Sair e reabrir filme;Estado do player ao voltar;App continua navegavel por D-pad;Formato de entrada apos retomar;Sem travamento ou recurso preso;;;;;;;
+T12;Interrupcao temporaria de rede;Erro seguro estado e recuperacao do player;Comportamento observado;Audio volta junto da imagem;Registrar se recupera ou exige nova tentativa;;;;;;;
+T13;Comparacao do mesmo VOD nos tres players;Dados do IPTV Player Lab;Mesmo modo e conteudo na TV;Mesmo formato indicado pelo Denon;Comparar observacoes sem concluir recompressao sem evidencia;;;;;;;
