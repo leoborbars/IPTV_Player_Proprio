@@ -1,66 +1,91 @@
-# LunaStream — IPTV Player Android (TCL C7K / Denon AVR-S920W)
+# LunaStream — IPTV Player Android
 
-**Objetivo:** reproduzir filmes VOD autorizados via Xtream Codes e evoluir a interface para Google TV. A Home exibe filmes e séries retornados pelo catálogo; reprodução de episódios, histórico e favoritos serão implementados em marcos posteriores. Não há canais ao vivo, EPG, gravação nem retransmissão.
+Aplicativo Android para Google TV/Android TV, desenvolvido para a TCL C7K. O projeto reproduz conteúdo VOD autorizado por Xtream Codes e mantém o player Media3 existente. Não oferece canais ao vivo, EPG, gravação ou retransmissão.
 
-## Status deste pacote
+**Repositório:** [leoborbars/IPTV_Player_Proprio](https://github.com/leoborbars/IPTV_Player_Proprio)
 
-O Marco 1 implementa Home cinematográfica em Views nativas, navegação lateral por controle remoto, fileiras com artes reais do provedor, busca/categorias de filmes e catálogo de séries. O player Media3/ExoPlayer existente permanece ativo com a mesma superfície e seleção de faixas. O APK Debug é gerado em `app/build/outputs/apk/debug/app-debug.apk`. A interface ainda precisa ser validada fisicamente na TCL.
+## Estado do projeto
+
+O Marco 1 entrega a Home cinematográfica em Views nativas, navegação por controle remoto, catálogo real de filmes e séries, categorias e busca de filmes. A arte e os metadados vêm do provedor Xtream quando disponíveis. O player Media3/ExoPlayer e sua seleção de faixas foram mantidos.
+
+A versão atual é `0.2-lunastream` (APK Debug). A compilação foi verificada; navegação na TV e reprodução 4K HDR/áudio multicanal ainda precisam de validação física na TCL e no Denon. Consulte [TESTE_NA_TCL.md](TESTE_NA_TCL.md) e [testes_4k_audio.csv](testes_4k_audio.csv).
 
 ## Requisitos
 
-- PC com Android Studio atualizado; JDK 17 e Android SDK API 36 instalados.
-- Plugin Android Gradle 8.13.2 + Gradle 8.13 + Kotlin 2.2.0.
-- TV em rede local, opções do desenvolvedor e depuração disponíveis para instalar o APK.
-- Conta Xtream Codes com acesso permitido a filmes/séries VOD. **Não envie usuário nem senha em prints ou mensagens.**
+- JDK 17 e Android SDK Platform 36.
+- Android Studio para instalar/atualizar o SDK; o desenvolvimento também pode ser feito pelo VS Code.
+- Uma conta Xtream Codes com acesso autorizado a VOD.
 
-## Preparação e compilação no Windows
+O Gradle Wrapper baixa a versão do Gradle configurada pelo projeto. Não versione `local.properties`: ele deve apontar para o SDK instalado neste computador e já está excluído pelo `.gitignore`.
 
-1. Instale JDK 17 e Android SDK Platform API 36. Android Studio pode ser usado apenas para instalar e atualizar o SDK; o desenvolvimento pode ser feito no VS Code.
-2. Abra esta pasta no VS Code e confira `local.properties`. Ele deve apontar para o SDK local e não deve ser versionado.
-3. No terminal integrado do VS Code, execute:
+## Compilar
 
-   ```powershell
-   .\gradlew.bat --no-daemon assembleDebug
-   ```
+Na raiz do projeto, no PowerShell:
 
-4. O APK resultante fica em `app/build/outputs/apk/debug/app-debug.apk`.
-5. Com a TV conectada por ADB, instale-o com:
+```powershell
+.\gradlew.bat --no-daemon :app:assembleDebug
+```
 
-   ```powershell
-   adb install -r .\app\build\outputs\apk\debug\app-debug.apk
-   ```
+O APK fica em:
 
-Consulte `TESTE_NA_TCL.md` para a preparação da TV, ARC e validação real. Este é código experimental: eventuais ajustes de compatibilidade ainda podem ser necessários.
-Decisões visuais estão em `docs/UI_DESIGN.md`; o mapeamento dos endpoints está em `docs/XTREAM_INTEGRATION.md`.
+```text
+app/build/outputs/apk/debug/app-debug.apk
+```
 
-## Operação
+## Instalar na TV
 
-1. Na TCL, coloque a saída de áudio para receiver/ARC e experimente **Auto / Pass Through** no menu de saída digital, de acordo com as opções reais do firmware. No Denon, use a saída **HDMI MONITOR 1 (ARC)** e habilite **HDMI Control / ARC**.
-2. Abra `LunaStream` na Google TV.
-3. Digite servidor (incluindo `https://` ou `http://` e porta, se aplicável), usuário e senha Xtream Codes.
-4. Na Home, o destaque usa o filme com data `added` mais recente válida; sem datas confiáveis, usa o primeiro item retornado. Sinopse, backdrop e metadados só aparecem quando `get_vod_info` os fornece.
-5. Use o menu lateral **Filmes** para abrir categorias e pesquisar. **Filmes 4K** aparece apenas quando o provedor retorna uma categoria chamada “Filmes 4K” ou “Filmes UHD”; esse nome não comprova resolução. A fileira **Séries em destaque** mostra dados de `get_series`; temporadas e episódios ainda não são reproduzidos.
-6. **Continuar assistindo** fica oculto sem progresso salvo. Favoritos e configurações estão no menu; favoritos ainda não persistem.
-7. Ao abrir o filme, `Assistir` inicia o Media3 atual. Durante a reprodução, `Diagnóstico` mostra codec, dimensões, FPS, sinalização HDR, codec de áudio e canais; `Áudio` seleciona faixa; `Legendas` seleciona faixa, quando reconhecida.
-8. No Denon, verifique o **formato de áudio efetivamente recebido** pelo painel frontal ou tela de informação do receiver, e registre esse resultado separadamente.
+Conecte a TV e o computador à mesma rede Wi-Fi e habilite **Opções do desenvolvedor → Depuração sem fio** na TV. Para parear usando código, deixe a tela **Parear dispositivo com código** aberta e use o IP e a porta de pareamento mostrados nela:
 
-### Limites do diagnóstico
+```powershell
+adb pair 192.168.3.72:43275
+```
 
-- Detectar vídeo HEVC 3840×2160 ou faixa E-AC3 6 canais **não comprova** que a saída HDMI realmente está reproduzindo esse formato.
-- HDR marcado como **PQ/ST2084** pode ser HDR10 ou HDR10+; o P0 não valida metadados dinâmicos.
-- Dolby Vision sinalizado no stream **não garante** que a TV tenha ativado o modo DV. Confirmar usando o indicador de modo da TCL.
-- O player não decodifica Dolby TrueHD/DTS-HD em uma saída ARC lossless: ARC é o limitador físico.
-- Sem transcoding; codecs não compatíveis podem não reproduzir som/imagem. O P0 não implementa fallback de FFmpeg.
-- Alguns arquivos não permitem buscar/avançar por limitações do servidor HTTP.
+Quando `adb pair` pedir, digite o código temporário exibido pela TV. No teste da TCL, a porta de pareamento foi `43275`. Depois volte à tela principal de **Depuração sem fio** e use o endereço IP e a porta que aparecem em **Endereço IP e porta**. No teste, a conexão foi feita com `192.168.3.72:37487`; essa porta é diferente da porta de pareamento. O comando `adb connect` não pede o código:
 
-## Segurança
+```powershell
+adb connect 192.168.3.72:37487
+adb devices
+```
 
-A API Xtream Codes costuma enviar credenciais como parâmetros de URL e também pode embuti-las na URL de vídeo. O app não inclui credenciais no código, nos relatórios ou nos logs. Se o usuário marcar **Lembrar neste dispositivo** depois de uma autenticação válida, elas são armazenadas localmente em forma criptografada com uma chave do Android Keystore e podem ser removidas por **Esquecer dados salvos**. Bibliotecas, intermediários e o servidor ainda podem registrar URLs. **Prefira HTTPS**. A configuração `android:usesCleartextTraffic="true"` existe apenas para permitir testar servidores Xtream antigos que usam HTTP. **Não distribua esta versão** nem envie logs completos sem revisar URLs e credenciais.
+Confirme que a TV aparece como `device` e instale o APK:
 
-## Próximos incrementos
+```powershell
+adb install -r .\app\build\outputs\apk\debug\app-debug.apk
+```
 
-- Validar navegação e foco na TCL e executar a matriz de áudio/vídeo em `testes_4k_audio.csv`, seguindo `TESTE_NA_TCL.md`.
-- Marco 2: tela de detalhes completa com metadados Xtream sob demanda.
-- Marco 3: temporadas e episódios da API Xtream.
-- Marco 4: progresso local e Favoritos.
-- Marco 5: overlay do player e diagnóstico ampliado sem alterar o pipeline Media3.
+O pareamento e a conexão sem fio exigem que os dois dispositivos estejam na mesma rede; redes de convidados podem bloquear a comunicação. Também é possível instalar por USB com a depuração USB habilitada.
+
+## Usar o aplicativo
+
+1. Abra **LunaStream** e informe o servidor Xtream (incluindo `https://` ou `http://` e a porta, se necessária), usuário e senha.
+2. A Home apresenta títulos do catálogo autorizado. O destaque escolhe o filme com a data `added` mais recente válida; sem datas confiáveis, usa o primeiro item retornado.
+3. Use o menu lateral para navegar com o D-pad, abrir **Filmes**, selecionar categorias ou pesquisar títulos. **Filmes 4K** depende de uma categoria do provedor chamada “Filmes 4K” ou “Filmes UHD”; o nome da categoria não comprova a resolução do conteúdo.
+4. Séries aparecem no catálogo. Temporadas e episódios ainda não são reproduzidos nesta etapa. Histórico e favoritos também serão implementados em marcos posteriores.
+5. Abra um filme para iniciar o player Media3. As informações de codec, resolução, HDR e áudio reportadas pelo app descrevem o stream/decoder; confirme separadamente o modo de imagem na TCL e o formato recebido pelo Denon.
+
+O app só mostra sinopse, backdrop e outros metadados quando o provedor os fornece. Sem progresso salvo, a fileira “Continuar assistindo” permanece oculta.
+
+## Segurança e limites
+
+- Use apenas serviços e conteúdo aos quais você tem autorização de acesso.
+- Prefira HTTPS. A API Xtream pode incluir credenciais em URLs; servidores, bibliotecas e intermediários podem registrá-las. Não compartilhe capturas ou logs sem remover usuários, senhas e URLs.
+- Se ativar **Lembrar neste dispositivo**, as credenciais são armazenadas localmente de forma criptografada com Android Keystore e podem ser removidas em **Esquecer dados salvos**.
+- `android:usesCleartextTraffic="true"` permite testar servidores antigos em HTTP; HTTP não protege credenciais em trânsito.
+- Detecção de HEVC 4K, E-AC-3 5.1 ou sinalização HDR não comprova o formato efetivamente exibido pela TV ou recebido pelo receiver. ARC convencional também limita o transporte de áudio lossless.
+- Esta é uma versão de desenvolvimento. Teste compatibilidade e reprodução no equipamento antes de qualquer distribuição.
+
+## Documentação
+
+- [Roteiro de teste na TCL e no Denon](TESTE_NA_TCL.md)
+- [Matriz de cenários 4K e áudio](testes_4k_audio.csv)
+- [Decisões visuais da Home](docs/UI_DESIGN.md)
+- [Integração Xtream Codes](docs/XTREAM_INTEGRATION.md)
+- [Documentação da API Xtream](API_XTREAM_CODES.md)
+
+## Próximos marcos
+
+1. Validar Home, navegação e player na TCL/Denon.
+2. Implementar a tela de detalhes do conteúdo.
+3. Implementar temporadas e episódios de séries.
+4. Adicionar progresso de reprodução e favoritos persistentes.
+5. Evoluir os controles e diagnósticos do player sem substituir o pipeline Media3.
