@@ -1,7 +1,18 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
 }
+
+val localProperties = Properties().apply {
+    val file = rootProject.file("local.properties")
+    if (file.exists()) file.inputStream().use { load(it) }
+}
+
+fun buildConfigString(value: String) = "\"${value.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r")}\""
+val defaultProgressEndpoint = localProperties.getProperty("lunastream.progressSyncEndpoint", "http://192.168.3.47:8787")
+val defaultProgressToken = localProperties.getProperty("lunastream.progressSyncToken", "")
 
 android {
     namespace = "br.com.iptvlab"
@@ -13,6 +24,8 @@ android {
         targetSdk = 35
         versionCode = 2
         versionName = "0.2-lunastream"
+        buildConfigField("String", "DEFAULT_PROGRESS_SYNC_ENDPOINT", buildConfigString(defaultProgressEndpoint))
+        buildConfigField("String", "DEFAULT_PROGRESS_SYNC_TOKEN", buildConfigString(defaultProgressToken))
     }
 
     compileOptions {

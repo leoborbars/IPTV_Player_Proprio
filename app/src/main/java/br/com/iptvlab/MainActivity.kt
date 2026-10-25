@@ -3,8 +3,11 @@ package br.com.iptvlab
 import android.app.Activity
 import android.app.AlertDialog
 import android.graphics.Color
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.content.res.ColorStateList
 import android.os.Bundle
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.text.InputType
@@ -12,6 +15,8 @@ import android.text.TextWatcher
 import android.text.Editable
 import android.view.Gravity
 import android.view.View
+import android.view.WindowInsets
+import android.view.WindowInsetsController
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.CheckBox
@@ -30,8 +35,12 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.HttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.analytics.AnalyticsListener
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import androidx.media3.ui.TrackSelectionDialogBuilder
@@ -43,7 +52,12 @@ class MainActivity : Activity() {
     private val uiHandler = Handler(Looper.getMainLooper())
     private lateinit var root: FrameLayout
     private lateinit var credentialStore: CredentialsStore
+    private lateinit var progressStore: WatchProgressStore
+    private lateinit var progressSettingsStore: ProgressSyncSettingsStore
     private var client: XtreamClient? = null
+    private var activeProfileId: String? = null
+    private var currentPlayingMovie: CatalogEntry? = null
+    private var lastProgressSyncAt = 0L
     private var movieCategories: List<CatalogEntry> = emptyList()
     private var seriesCategories: List<CatalogEntry> = emptyList()
     private var allMovies: List<CatalogEntry> = emptyList()
@@ -56,29 +70,51 @@ class MainActivity : Activity() {
     private var featuredSeries: List<SeriesEntry> = emptyList()
     private var homeLoading = false
     private var homeError: String? = null
+    private var homeErrorActionLabel = "Tentar novamente"
+    private var connectionGeneration = 0
+    private var homeIsVisible = false
     private var movies: List<CatalogEntry> = emptyList()
     private var categoryName = ""
     private var selectedMovieCategoryId: Int? = null
+    private var selectedSeriesCategoryId: Int? = null
+    private val allMoviesCategory = CatalogEntry(-1, "Todos os filmes")
+    private val allSeriesCategory = CatalogEntry(-1, "Todas as séries")
+    private val movieDetailsCache = mutableMapOf<Int, MovieDetails>()
+    private var movieDetailsRequestGeneration = 0
+    private var pendingMovieDetailsRequest: Runnable? = null
     private var currentMovieNav = "Filmes"
     private var backAction: (() -> Unit)? = null
     private var returnFromPlayer: (() -> Unit)? = null
     private var player: ExoPlayer? = null
     private var playerView: PlayerView? = null
     private var diagnosticView: TextView? = null
-    private var diagnosticsVisible = true
+    private var diagnosticPanel: LinearLayout? = null
+    private var playerActionDock: LinearLayout? = null
+    private var previousSystemUiVisibility: Int? = null
+    private var diagnosticsVisible = false
     private var videoDecoder = "aguardando"
     private var audioDecoder = "aguardando"
     private var droppedFrames = 0
     private var bufferingEvents = 0
     private var latestError = "nenhum"
 
+    private val saveProgressTick = object : Runnable {
+        override fun run() {
+            if (player != null) {
+                saveCurrentProgress(syncRemote = System.currentTimeMillis() - lastProgressSyncAt >= 15_000L)
+                uiHandler.postDelayed(this, 5_000L)
+            }
+        }
+    }
+
     private val lunaUi by lazy {
         LunaHomeScreen(this, LunaHomeActions(
             onNavigate = ::navigate,
-            onRetry = { showLogin() },
+            onRetry = ::retryCatalog,
             onPlay = { movie -> playMovie(movie) { showHome() } },
             onMovieDetails = { movie -> openMovieDetails(movie) { showHome() } },
             onMovieCategory = { category -> selectMovieCategory(category, "Filmes 4K") },
+            onMovieFocus = ::requestMovieDetails,
             onSeriesCategory = { category -> selectSeriesCategory(category) },
             onSeriesDetails = ::openSeriesDetails
         ))
@@ -98,9 +134,19 @@ class MainActivity : Activity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         root = FrameLayout(this)
         credentialStore = CredentialsStore(applicationContext)
+        progressStore = WatchProgressStore(applicationContext)
+        progressSettingsStore = ProgressSyncSettingsStore(applicationContext)
         root.setBackgroundColor(Color.rgb(12, 17, 25))
         setContentView(root)
-        showLogin()
+        val saved = credentialStore.load()
+        if (saved != null) {
+            startConnection(saved, rememberCredentials = null)
+        } else {
+            homeLoading = false
+            homeError = "Configure o servidor em Configurações para atualizar o catálogo."
+            homeErrorActionLabel = "Configurar servidor"
+            showHome()
+        }
     }
 
     private fun dp(v: Int) = (resources.displayMetrics.density * v).toInt()
@@ -117,11 +163,67 @@ class MainActivity : Activity() {
         minHeight = dp(54)
         setOnClickListener { action() }
     }
+    private fun playerControlButton(icon: String, title: String, action: () -> Unit) = TextView(this).apply {
+        text = "$icon  $title"
+        contentDescription = title
+        textSize = 12f
+        typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+        setTextColor(Color.rgb(236, 245, 252))
+        gravity = Gravity.CENTER
+        setPadding(dp(9), dp(5), dp(9), dp(5))
+        minHeight = dp(38)
+        minWidth = dp(0)
+        isFocusable = true
+        isClickable = true
+        fun setPlayerButtonBackground(focused: Boolean) {
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = dp(15).toFloat()
+                setColor(if (focused) Color.rgb(18, 91, 124) else Color.argb(150, 18, 31, 47))
+                setStroke(dp(if (focused) 2 else 1), if (focused) Color.rgb(72, 206, 246) else Color.argb(115, 129, 174, 202))
+            }
+        }
+        setPlayerButtonBackground(false)
+        setOnFocusChangeListener { _, focused -> setPlayerButtonBackground(focused) }
+        setOnClickListener { action() }
+    }
+    private fun setPlayerImmersive(enabled: Boolean) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val controller = window.insetsController ?: return
+            if (enabled) {
+                controller.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                controller.hide(WindowInsets.Type.systemBars())
+            } else {
+                controller.show(WindowInsets.Type.systemBars())
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            if (enabled) {
+                val decor = window.decorView
+                if (previousSystemUiVisibility == null) previousSystemUiVisibility = decor.systemUiVisibility
+                decor.systemUiVisibility = (
+                    View.SYSTEM_UI_FLAG_FULLSCREEN or
+                        View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+                        View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
+                        View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
+                        View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
+                        View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                    )
+            } else {
+                window.decorView.systemUiVisibility = previousSystemUiVisibility ?: View.SYSTEM_UI_FLAG_VISIBLE
+                previousSystemUiVisibility = null
+            }
+        }
+    }
     private fun column() = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
         setPadding(dp(35), dp(25), dp(35), dp(25))
     }
-    private fun replace(view: View) { root.removeAllViews(); root.addView(view) }
+    private fun replace(view: View, isHome: Boolean = false) {
+        root.removeAllViews()
+        root.addView(view)
+        homeIsVisible = isHome
+    }
     private fun msg(text: String) = Toast.makeText(this, text, Toast.LENGTH_LONG).show()
     private fun runNetwork(task: () -> Unit, onError: (String) -> Unit) {
         worker.execute {
@@ -133,8 +235,9 @@ class MainActivity : Activity() {
     }
 
     private fun showLogin() {
+        connectionGeneration++
         stopPlayer()
-        backAction = null
+        backAction = { showHome() }
         val saved = credentialStore.load()
         val screen = column()
         screen.addView(label("LunaStream", 30f))
@@ -166,67 +269,108 @@ class MainActivity : Activity() {
             if (url.startsWith("http://")) msg("Aviso: HTTP sem criptografia transmite credenciais pela rede")
             val credentials = SavedCredentials(url, user.text.toString().trim(), pass.text.toString())
             val shouldRemember = remember.isChecked
-            val c = try { XtreamClient(credentials.server, credentials.username, credentials.password) }
-                catch (e: IllegalArgumentException) { msg(e.message ?: "Dados inválidos"); return@button }
-            status.text = "Conectando..."
-            movieCategories = emptyList()
-            seriesCategories = emptyList()
-            allMovies = emptyList()
-            fourKCategory = null
-            fourKMovies = emptyList()
-            recentMovies = emptyList()
-            featuredMovie = null
-            featuredDetails = null
-            featuredCategoryName = null
-            featuredSeries = emptyList()
-            client = c
-            homeLoading = true
-            homeError = null
-            replace(lunaUi.home(homeData()))
-            runNetwork({
-                c.authenticate()
-                runCatching {
-                    if (shouldRemember) credentialStore.save(credentials) else credentialStore.clear()
-                }.onFailure {
-                    runOnUiThread { msg("Não foi possível guardar os dados neste aparelho") }
-                }
-                val loadedCategories = c.movieCategories()
-                val loadedMovies = c.movies()
-                val loadedFourKCategory = loadedCategories.firstOrNull { isFourKCategory(it.title) }
-                val loadedFourKMovies = loadedFourKCategory?.let { category ->
-                    loadedMovies.filter { it.categoryId == category.id }.ifEmpty {
-                        runCatching { c.movies(category.id) }.getOrDefault(emptyList())
-                    }
-                }.orEmpty()
-                val loadedSeriesCategories = runCatching { c.seriesCategories() }.getOrDefault(emptyList())
-                val loadedSeries = runCatching { c.series() }.getOrDefault(emptyList())
-                val loadedRecent = sortByProviderDate(loadedMovies)
-                val loadedFeatured = loadedRecent.firstOrNull() ?: loadedMovies.firstOrNull()
-                val loadedDetails = loadedFeatured?.let { featured -> runCatching { c.movieDetails(featured.id) }.getOrNull() }
-                val loadedFeaturedCategory = loadedFeatured?.categoryId?.let { id -> loadedCategories.firstOrNull { it.id == id }?.title }
-                runOnUiThread {
-                    movieCategories = loadedCategories
-                    seriesCategories = loadedSeriesCategories
-                    allMovies = loadedMovies
-                    fourKCategory = loadedFourKCategory
-                    fourKMovies = loadedFourKMovies
-                    recentMovies = loadedRecent
-                    featuredMovie = loadedFeatured
-                    featuredDetails = loadedDetails
-                    featuredCategoryName = loadedFeaturedCategory
-                    featuredSeries = loadedSeries
-                    homeLoading = false
-                    homeError = null
-                    showHome()
-                }
-            }, {
-                homeLoading = false
-                homeError = "Não foi possível carregar o catálogo. Confira o servidor e tente novamente."
-                showHome()
-            })
+            startConnection(credentials, rememberCredentials = shouldRemember)
         })
         val scroll = ScrollView(this).apply { addView(screen) }
         replace(scroll)
+    }
+
+    /** Opens the catalog first, then authenticates and refreshes Xtream data in the background. */
+    private fun startConnection(credentials: SavedCredentials, rememberCredentials: Boolean?) {
+        val c = try {
+            XtreamClient(credentials.server, credentials.username, credentials.password)
+        } catch (e: IllegalArgumentException) {
+            homeLoading = false
+            homeError = e.message ?: "Dados de conexão inválidos."
+            homeErrorActionLabel = "Configurações"
+            showHome()
+            return
+        }
+        val generation = ++connectionGeneration
+        val profileId = WatchProgressStore.profileId(credentials.username)
+        val legacyProfileId = WatchProgressStore.legacyProfileId(credentials.server, credentials.username)
+        activeProfileId = profileId
+        clearCatalogData()
+        client = c
+        homeLoading = true
+        homeError = null
+        homeErrorActionLabel = "Tentar novamente"
+        showHome()
+
+        runNetwork({
+            c.authenticate()
+            syncProgressProfile(profileId, legacyProfileId)
+            rememberCredentials?.let { remember ->
+                runCatching {
+                    if (remember) credentialStore.save(credentials) else credentialStore.clear()
+                }.onFailure {
+                    runOnUiThread {
+                        if (generation == connectionGeneration) msg("Não foi possível guardar os dados neste aparelho")
+                    }
+                }
+            }
+            val loadedCategories = c.movieCategories()
+            val loadedMovies = c.movies()
+            val loadedFourKCategory = loadedCategories.firstOrNull { isFourKCategory(it.title) }
+            val loadedFourKMovies = loadedFourKCategory?.let { category ->
+                loadedMovies.filter { it.categoryId == category.id }.ifEmpty {
+                    runCatching { c.movies(category.id) }.getOrDefault(emptyList())
+                }
+            }.orEmpty()
+            val loadedSeriesCategories = runCatching { c.seriesCategories() }.getOrDefault(emptyList())
+            val loadedSeries = runCatching { c.series() }.getOrDefault(emptyList())
+            val loadedRecent = sortByProviderDate(loadedMovies)
+            val loadedFeatured = loadedRecent.firstOrNull() ?: loadedMovies.firstOrNull()
+            val loadedDetails = loadedFeatured?.let { featured -> runCatching { c.movieDetails(featured.id) }.getOrNull() }
+            val loadedFeaturedCategory = loadedFeatured?.categoryId?.let { id -> loadedCategories.firstOrNull { it.id == id }?.title }
+            runOnUiThread {
+                if (generation != connectionGeneration) return@runOnUiThread
+                movieCategories = loadedCategories
+                seriesCategories = loadedSeriesCategories
+                allMovies = loadedMovies
+                fourKCategory = loadedFourKCategory
+                fourKMovies = loadedFourKMovies
+                recentMovies = loadedRecent
+                featuredMovie = loadedFeatured
+                featuredDetails = loadedDetails
+                if (loadedFeatured != null && loadedDetails != null) movieDetailsCache[loadedFeatured.id] = loadedDetails
+                featuredCategoryName = loadedFeaturedCategory
+                featuredSeries = loadedSeries
+                homeLoading = false
+                homeError = null
+                if (homeIsVisible) showHome()
+            }
+        }, {
+            if (generation != connectionGeneration) return@runNetwork
+            homeLoading = false
+            homeError = "Não foi possível atualizar o catálogo. Confira o servidor e tente novamente."
+            homeErrorActionLabel = "Tentar novamente"
+            if (homeIsVisible) showHome()
+        })
+    }
+
+    private fun clearCatalogData() {
+        movieCategories = emptyList()
+        seriesCategories = emptyList()
+        allMovies = emptyList()
+        fourKCategory = null
+        fourKMovies = emptyList()
+        recentMovies = emptyList()
+        featuredMovie = null
+        featuredDetails = null
+        movieDetailsCache.clear()
+        featuredCategoryName = null
+        featuredSeries = emptyList()
+        movies = emptyList()
+    }
+
+    private fun retryCatalog() {
+        val saved = credentialStore.load()
+        if (saved != null) {
+            startConnection(saved, rememberCredentials = null)
+        } else {
+            navigate("Configurações")
+        }
     }
 
     private fun homeData() = LunaHomeData(
@@ -237,14 +381,16 @@ class MainActivity : Activity() {
         fourKCategory = fourKCategory,
         fourKMovies = fourKMovies,
         recentMovies = recentMovies,
+        continueWatching = continueEntries(),
         featuredSeries = featuredSeries,
         loading = homeLoading,
-        errorMessage = homeError
+        errorMessage = homeError,
+        errorActionLabel = homeErrorActionLabel
     )
 
     private fun showHome() {
         backAction = null
-        replace(lunaUi.home(homeData()))
+        replace(lunaUi.home(homeData()), isHome = true)
     }
 
     private fun navigate(destination: String) {
@@ -262,43 +408,228 @@ class MainActivity : Activity() {
                 }
             }
             "Continuar" -> {
-                backAction = { showHome() }
-                replace(lunaUi.messageScreen("Continuar", "Continuar assistindo", "Ainda não há progresso salvo neste dispositivo.", "Voltar ao início") { showHome() })
+                showContinueCatalog()
             }
             "Favoritos" -> {
                 backAction = { showHome() }
                 replace(lunaUi.messageScreen("Favoritos", "Favoritos", "Ainda não há favoritos salvos neste dispositivo.", "Voltar ao início") { showHome() })
             }
             "Configurações" -> {
-                backAction = { showHome() }
-                replace(lunaUi.messageScreen(
-                    "Configurações",
-                    "Configurações",
-                    "Edite o endereço ou os dados de conexão Xtream.",
-                    "Editar conexão"
-                ) { showLogin() })
+                showSettings()
             }
         }
     }
 
-    private fun showMovieCategories() {
+    private fun continueEntries(): List<CatalogEntry> {
+        val profile = activeProfileId ?: return emptyList()
+        val catalogById = allMovies.associateBy { it.id }
+        return progressStore.list(profile).mapNotNull { progress ->
+            val id = progress.mediaId.toIntOrNull() ?: return@mapNotNull null
+            val catalogItem = catalogById[id]
+            (catalogItem ?: CatalogEntry(id, progress.title, posterUrl = progress.posterUrl))
+                .copy(posterUrl = progress.posterUrl ?: catalogItem?.posterUrl)
+        }
+    }
+
+    private fun showContinueCatalog() {
+        val entries = continueEntries()
+        if (entries.isEmpty()) {
+            backAction = { showHome() }
+            replace(lunaUi.messageScreen(
+                "Continuar", "Continuar assistindo",
+                "Os filmes que você começar aparecerão aqui. O progresso fica salvo neste aparelho e pode sincronizar pelo NAS.",
+                "Voltar ao início"
+            ) { showHome() })
+            return
+        }
         backAction = { showHome() }
-        replace(lunaUi.categoryPicker("Filmes · Categorias", "Filmes", movieCategories) { category ->
-            selectMovieCategory(category, "Filmes")
+        val category = CatalogEntry(CONTINUE_CATEGORY_ID, "Continuar assistindo")
+        replace(lunaUi.movieCatalog(
+            title = "Continuar assistindo · ${entries.size} títulos",
+            selectedNav = "Continuar",
+            categories = listOf(category),
+            selectedCategoryId = category.id,
+            movies = entries,
+            initialDetails = entries.firstOrNull()?.let { movieDetailsCache[it.id] },
+            initialDetailsMovieId = entries.firstOrNull()?.id,
+            onCategory = {},
+            onMovie = { movie -> playMovie(movie) { showHome() } },
+            onMovieFocus = ::requestMovieDetails
+        ))
+    }
+
+    private fun showSettings() {
+        backAction = { showHome() }
+        val screen = column()
+        screen.addView(label("Configurações", 30f))
+        screen.addView(label("Catálogo", 18f))
+        screen.addView(button("Editar conexão Xtream") { showLogin() })
+        screen.addView(label("Sincronizar progresso pelo NAS", 18f))
+        screen.addView(label(
+            progressSettingsStore.load()?.let { "NAS configurado: ${it.endpoint}" }
+                ?: "Opcional · compartilhar o progresso entre TV e celular na rede de casa.",
+            15f
+        ))
+        val nasStatus = label("NAS: verificando conexão…", 15f)
+        screen.addView(nasStatus)
+        checkNasConnection(nasStatus)
+        screen.addView(button("Configurar sincronização NAS") { showNasSyncSettings() })
+        screen.addView(button("Voltar") { showHome() })
+        replace(ScrollView(this).apply { addView(screen) })
+    }
+
+    private fun checkNasConnection(statusView: TextView) {
+        val settings = progressSettingsStore.load()
+        if (settings == null) {
+            statusView.text = "NAS: não configurado"
+            return
+        }
+        worker.execute {
+            val result = runCatching {
+                val connection = (java.net.URL("${settings.endpoint.trimEnd('/')}/health")
+                    .openConnection() as java.net.HttpURLConnection).apply {
+                    connectTimeout = 2500
+                    readTimeout = 3500
+                    requestMethod = "GET"
+                }
+                try {
+                    val code = connection.responseCode
+                    val body = if (code in 200..299) connection.inputStream.bufferedReader().use { it.readText() } else ""
+                    if (code == 200 && body.contains("\"status\":\"ok\"")) {
+                        "NAS: conectado"
+                    } else {
+                        "NAS: API respondeu HTTP $code"
+                    }
+                } finally {
+                    connection.disconnect()
+                }
+            }.getOrElse { "NAS: indisponível" }
+            runOnUiThread {
+                if (statusView.parent != null) statusView.text = result
+            }
+        }
+    }
+
+    private fun showNasSyncSettings() {
+        backAction = { showSettings() }
+        val saved = progressSettingsStore.load()
+        val screen = column()
+        screen.addView(label("Sincronização NAS", 28f))
+        screen.addView(label("Informe o endereço local do serviço e o mesmo token usado no OpenMediaVault.", 15f))
+        val endpoint = EditText(this).apply {
+            hint = "http://192.168.3.10:8787"
+            setSingleLine()
+            textSize = 19f
+            setTextColor(Color.WHITE)
+            setHintTextColor(Color.LTGRAY)
+            backgroundTintList = ColorStateList.valueOf(Color.LTGRAY)
+            setText(saved?.endpoint.orEmpty())
+        }
+        val token = EditText(this).apply {
+            hint = "Token do NAS"
+            setSingleLine()
+            textSize = 19f
+            setTextColor(Color.WHITE)
+            setHintTextColor(Color.LTGRAY)
+            backgroundTintList = ColorStateList.valueOf(Color.LTGRAY)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            setText(saved?.token.orEmpty())
+        }
+        screen.addView(endpoint)
+        screen.addView(token)
+        screen.addView(button("Salvar sincronização") {
+            val url = endpoint.text.toString().trim().trimEnd('/')
+            val secret = token.text.toString()
+            val uri = runCatching { android.net.Uri.parse(url) }.getOrNull()
+            if (uri == null || !(uri.scheme.equals("http", true) || uri.scheme.equals("https", true)) || uri.host.isNullOrBlank()) {
+                msg("Informe um endereço HTTP ou HTTPS válido para o NAS")
+            } else if (secret.length < 32) {
+                msg("O token precisa ter pelo menos 32 caracteres")
+            } else {
+                runCatching { progressSettingsStore.save(ProgressSyncSettings(url, secret)) }
+                    .onSuccess {
+                        msg("Sincronização salva. TV e celular devem usar a mesma conta Xtream e token.")
+                        showSettings()
+                    }
+                    .onFailure { msg("Não foi possível salvar as configurações do NAS") }
+            }
         })
+        if (saved != null) screen.addView(button("Desativar sincronização NAS") {
+            progressSettingsStore.clear()
+            msg("Sincronização NAS desativada; o progresso local continua salvo.")
+            showSettings()
+        })
+        screen.addView(button("Voltar") { showSettings() })
+        replace(ScrollView(this).apply { addView(screen) })
+    }
+
+    private fun syncProgressProfile(profileId: String, legacyProfileId: String) {
+        val profileTag = profileId.take(8)
+        val settings = progressSettingsStore.load() ?: run {
+            android.util.Log.w("LunaProgressSync", "No NAS settings for profile=$profileTag")
+            return
+        }
+        runCatching {
+            val syncClient = ProgressSyncClient(settings)
+            if (legacyProfileId != profileId) {
+                progressStore.merge(profileId, progressStore.all(legacyProfileId))
+            }
+            val remote = syncClient.fetch(profileId)
+            val legacyRemote = if (legacyProfileId == profileId) emptyList() else {
+                runCatching { syncClient.fetch(legacyProfileId) }.getOrDefault(emptyList())
+            }
+            progressStore.merge(profileId, remote + legacyRemote)
+            val remoteById = remote.associateBy { it.mediaId }
+            progressStore.all(profileId)
+                .filter { it.updatedAt > (remoteById[it.mediaId]?.updatedAt ?: 0L) }
+                .forEach { syncClient.upsert(profileId, it) }
+            lastProgressSyncAt = System.currentTimeMillis()
+            remote.size to progressStore.all(profileId).size
+        }.onSuccess { (remoteCount, localCount) ->
+            android.util.Log.i("LunaProgressSync", "profile=$profileTag fetched=$remoteCount local=$localCount")
+        }.onFailure { error ->
+            android.util.Log.e("LunaProgressSync", "profile=$profileTag fetch failed: ${error.javaClass.simpleName}: ${error.message}")
+        }
+    }
+
+    private fun syncProgressItem(profileId: String, item: WatchProgress) {
+        val profileTag = profileId.take(8)
+        val settings = progressSettingsStore.load() ?: run {
+            android.util.Log.w("LunaProgressSync", "No NAS settings for upload profile=$profileTag")
+            return
+        }
+        runCatching { ProgressSyncClient(settings).upsert(profileId, item) }
+            .onSuccess {
+                lastProgressSyncAt = System.currentTimeMillis()
+                android.util.Log.i("LunaProgressSync", "profile=$profileTag upload succeeded")
+            }
+            .onFailure { error ->
+                android.util.Log.e("LunaProgressSync", "profile=$profileTag upload failed: ${error.javaClass.simpleName}: ${error.message}")
+            }
+    }
+
+    private fun showMovieCategories() {
+        currentMovieNav = "Filmes"
+        selectedMovieCategoryId = allMoviesCategory.id
+        categoryName = allMoviesCategory.title
+        movies = allMovies.sortedBy { it.title.lowercase() }
+        showMovies()
     }
 
     private fun showSeriesCategories() {
-        backAction = { showHome() }
-        replace(lunaUi.categoryPicker("Séries · Categorias", "Séries", seriesCategories) { category ->
-            selectSeriesCategory(category)
-        })
+        selectedSeriesCategoryId = allSeriesCategory.id
+        showSeries(null, featuredSeries)
     }
 
     private fun selectMovieCategory(category: CatalogEntry, nav: String) {
         currentMovieNav = nav
         selectedMovieCategoryId = category.id
         categoryName = category.title
+        if (category.id == allMoviesCategory.id) {
+            movies = allMovies.sortedBy { it.title.lowercase() }
+            showMovies()
+            return
+        }
         val cached = allMovies.filter { it.categoryId == category.id }
         if (cached.isNotEmpty()) {
             movies = cached.sortedBy { it.title.lowercase() }
@@ -329,17 +660,27 @@ class MainActivity : Activity() {
     private fun showMovies() {
         backAction = { if (currentMovieNav == "Filmes 4K") showHome() else showMovieCategories() }
         replace(lunaUi.movieCatalog(
-            title = "$categoryName  ·  ${movies.size} títulos",
+            title = categoryName,
             selectedNav = currentMovieNav,
-            categories = movieCategories,
+            categories = if (currentMovieNav == "Filmes 4K") listOfNotNull(fourKCategory)
+                else listOf(allMoviesCategory) + movieCategories,
             selectedCategoryId = selectedMovieCategoryId,
             movies = movies,
+            initialDetails = movies.firstOrNull()?.let { movieDetailsCache[it.id] },
+            initialDetailsMovieId = movies.firstOrNull()?.id,
             onCategory = { selectMovieCategory(it, currentMovieNav) },
-            onMovie = { movie -> openMovieDetails(movie) { showMovies() } }
+            onMovie = { movie -> openMovieDetails(movie) { showMovies() } },
+            onMovieFocus = ::requestMovieDetails
         ))
     }
 
     private fun selectSeriesCategory(category: CatalogEntry) {
+        if (category.id == allSeriesCategory.id) {
+            selectedSeriesCategoryId = allSeriesCategory.id
+            showSeries(null, featuredSeries)
+            return
+        }
+        selectedSeriesCategoryId = category.id
         val cached = featuredSeries.filter { it.categoryId == category.id }
         if (cached.isNotEmpty()) {
             showSeries(category, cached)
@@ -360,13 +701,14 @@ class MainActivity : Activity() {
     }
 
     private fun showSeries(category: CatalogEntry? = null, items: List<SeriesEntry> = featuredSeries) {
-        val title = category?.let { "${it.title}  ·  ${items.size} séries" } ?: "Séries"
+        val title = category?.let { "${it.title}  ·  ${items.size} séries" }
+            ?: "Todas as séries  ·  ${items.size} séries"
         backAction = { showSeriesCategories() }
         replace(lunaUi.seriesCatalog(
             title = title,
             selectedNav = "Séries",
-            categories = seriesCategories,
-            selectedCategoryId = category?.id,
+            categories = listOf(allSeriesCategory) + seriesCategories,
+            selectedCategoryId = selectedSeriesCategoryId,
             series = items,
             onCategory = ::selectSeriesCategory,
             onSeries = ::openSeriesDetails
@@ -374,7 +716,53 @@ class MainActivity : Activity() {
     }
 
     private fun openMovieDetails(movie: CatalogEntry, returnTo: () -> Unit) {
-        val details = if (featuredMovie?.id == movie.id) featuredDetails else null
+        val details = movieDetailsCache[movie.id] ?: if (featuredMovie?.id == movie.id) featuredDetails else null
+        if (details == null) {
+            requestMovieDetails(movie) { loaded -> showMovieDetailsDialog(movie, loaded, returnTo) }
+            return
+        }
+        showMovieDetailsDialog(movie, details, returnTo)
+    }
+
+    private fun openMovieCast(movie: CatalogEntry) {
+        val cached = movieDetailsCache[movie.id] ?: if (featuredMovie?.id == movie.id) featuredDetails else null
+        if (cached != null) {
+            showMovieCastDialog(movie, cached)
+            return
+        }
+        val activeClient = client ?: run {
+            showMovieCastDialog(movie, null)
+            return
+        }
+        val loading = AlertDialog.Builder(this)
+            .setTitle("Elenco")
+            .setMessage("Carregando informações do elenco…")
+            .setCancelable(false)
+            .create()
+        loading.show()
+        worker.execute {
+            val details = runCatching { activeClient.movieDetails(movie.id) }.getOrNull()
+            runOnUiThread {
+                if (loading.isShowing) loading.dismiss()
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                if (details != null) movieDetailsCache[movie.id] = details
+                showMovieCastDialog(movie, details)
+            }
+        }
+    }
+
+    private fun showMovieCastDialog(movie: CatalogEntry, details: MovieDetails?) {
+        val cast = details?.cast?.trim()?.takeIf { it.isNotEmpty() }
+            ?: if (details == null) "Não foi possível carregar o elenco agora."
+            else "O catálogo não informou o elenco deste título."
+        AlertDialog.Builder(this)
+            .setTitle("Elenco")
+            .setMessage("${movie.title}\n\n$cast")
+            .setPositiveButton("Fechar", null)
+            .show()
+    }
+
+    private fun showMovieDetailsDialog(movie: CatalogEntry, details: MovieDetails?, returnTo: () -> Unit) {
         val category = movie.categoryId?.let { id -> movieCategories.firstOrNull { it.id == id }?.title }
         val description = buildList {
             category?.let { add("Categoria: $it") }
@@ -382,6 +770,8 @@ class MainActivity : Activity() {
             details?.year?.let { add("Ano: $it") }
             details?.duration?.let { add("Duração: $it") }
             details?.genre?.let { add("Gênero: $it") }
+            details?.cast?.let { add("Elenco: $it") }
+            details?.director?.let { add("Direção: $it") }
             details?.plot?.let { add(it) }
         }.joinToString("\n\n").ifBlank { "O catálogo não informou outros detalhes para este título." }
         AlertDialog.Builder(this)
@@ -390,6 +780,33 @@ class MainActivity : Activity() {
             .setNegativeButton("Fechar", null)
             .setPositiveButton("Assistir") { _, _ -> playMovie(movie, returnTo) }
             .show()
+    }
+
+    private fun requestMovieDetails(movie: CatalogEntry, deliver: (MovieDetails?) -> Unit) {
+        val cached = movieDetailsCache[movie.id] ?: if (featuredMovie?.id == movie.id) featuredDetails else null
+        if (cached != null) {
+            deliver(cached)
+            return
+        }
+        val generation = ++movieDetailsRequestGeneration
+        pendingMovieDetailsRequest?.let(uiHandler::removeCallbacks)
+        val request = Runnable {
+            if (generation != movieDetailsRequestGeneration) return@Runnable
+            val activeClient = client
+            if (activeClient == null) {
+                deliver(null)
+                return@Runnable
+            }
+            worker.execute {
+                val details = runCatching { activeClient.movieDetails(movie.id) }.getOrNull()
+                runOnUiThread {
+                    if (details != null) movieDetailsCache[movie.id] = details
+                    if (generation == movieDetailsRequestGeneration) deliver(details)
+                }
+            }
+        }
+        pendingMovieDetailsRequest = request
+        uiHandler.postDelayed(request, 300)
     }
 
     private fun openSeriesDetails(series: SeriesEntry) {
@@ -418,47 +835,139 @@ class MainActivity : Activity() {
         val c = client ?: return
         val url = try { c.movieUrl(movie) } catch (e: Exception) { msg("Formato de arquivo não reconhecido"); return }
         stopPlayer()
+        currentPlayingMovie = movie
         returnFromPlayer = returnTo
         videoDecoder = "aguardando"; audioDecoder = "aguardando"
         droppedFrames = 0; bufferingEvents = 0; latestError = "nenhum"
-        val exo = ExoPlayer.Builder(this).build()
+        val httpDataSourceFactory = DefaultHttpDataSource.Factory()
+            .setAllowCrossProtocolRedirects(true)
+        val mediaSourceFactory = DefaultMediaSourceFactory(
+            DefaultDataSource.Factory(this, httpDataSourceFactory)
+        )
+        val exo = ExoPlayer.Builder(this)
+            .setMediaSourceFactory(mediaSourceFactory)
+            .build()
         player = exo
         // PlayerView usa SurfaceView por padrão, preferida para preservar HDR no Android TV.
         val pv = PlayerView(this).apply {
             player = exo
-            useController = true
+    useController = true
+    setControllerAutoShow(false)
+    setControllerHideOnTouch(true)
+    setControllerShowTimeoutMs(4500)
+    setControllerAnimationEnabled(true)
             resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
             setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING)
         }
-        playerView = pv
+    playerView = pv
+    setPlayerImmersive(true)
         root.removeAllViews()
         root.addView(pv, FrameLayout.LayoutParams(-1, -1))
+        pv.findViewById<View>(androidx.media3.ui.R.id.exo_settings)?.visibility = View.GONE
         val info = label("Carregando dados técnicos...", 16f).apply {
             setBackgroundColor(Color.argb(215, 5, 12, 20))
             setPadding(dp(15), dp(12), dp(15), dp(12))
         }
         diagnosticView = info
-        root.addView(info, FrameLayout.LayoutParams(dp(580), -2, Gravity.TOP or Gravity.START))
+    val diagnosticCard = LinearLayout(this).apply {
+      orientation = LinearLayout.VERTICAL
+      setPadding(dp(18), dp(14), dp(18), dp(14))
+      background = GradientDrawable().apply {
+        setColor(Color.argb(225, 7, 14, 27))
+        cornerRadius = dp(16).toFloat()
+        setStroke(dp(1), Color.argb(150, 78, 190, 255))
+      }
+      visibility = View.GONE
+    }
+    val diagnosticHeading = label("DIAGNÓSTICO DO STREAM", 14f).apply {
+      setTextColor(Color.rgb(105, 205, 255))
+      setTypeface(typeface, Typeface.BOLD)
+      setPadding(0, 0, 0, dp(8))
+    }
+    diagnosticCard.addView(diagnosticHeading)
+    diagnosticCard.addView(info)
+    diagnosticPanel = diagnosticCard
+    root.addView(diagnosticCard, FrameLayout.LayoutParams(dp(620), -2, Gravity.TOP or Gravity.START).apply {
+      setMargins(dp(28), dp(28), dp(28), 0)
+    })
         val dock = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setBackgroundColor(Color.argb(225, 5, 12, 20))
         }
-        dock.addView(button("Diagnóstico") { diagnosticsVisible = !diagnosticsVisible; info.visibility = if (diagnosticsVisible) View.VISIBLE else View.GONE })
+    dock.addView(playerControlButton("ⓘ", "Informação") {
+      diagnosticsVisible = !diagnosticsVisible
+      diagnosticPanel?.visibility = if (diagnosticsVisible) View.VISIBLE else View.GONE
+      pv.showController()
+    })
         dock.addView(button("Áudio") { TrackSelectionDialogBuilder(this, "Faixas de áudio", exo, C.TRACK_TYPE_AUDIO).build().show() })
         dock.addView(button("Legendas") { TrackSelectionDialogBuilder(this, "Legendas", exo, C.TRACK_TYPE_TEXT).setShowDisableOption(true).build().show() })
         dock.addView(button("Voltar") { leavePlayer() })
-        root.addView(dock, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM))
+    root.addView(dock, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
+      setMargins(dp(16), 0, dp(16), dp(4))
+    })
+    playerActionDock = dock
+    dock.visibility = View.GONE
+    dock.setPadding(dp(6), dp(4), dp(6), dp(4))
+    dock.gravity = Gravity.CENTER
+    dock.background = GradientDrawable().apply {
+      setColor(Color.argb(225, 7, 14, 27))
+      cornerRadius = dp(18).toFloat()
+      setStroke(dp(1), Color.argb(125, 78, 190, 255))
+    }
+    dock.removeAllViews()
+    dock.addView(playerControlButton("ⓘ", "Informação") {
+      diagnosticsVisible = !diagnosticsVisible
+      diagnosticPanel?.visibility = if (diagnosticsVisible) View.VISIBLE else View.GONE
+      pv.showController()
+    })
+    dock.addView(playerControlButton("♫", "Áudio") {
+      TrackSelectionDialogBuilder(this, "Áudio", exo, C.TRACK_TYPE_AUDIO).build().show()
+      pv.showController()
+    })
+    dock.addView(playerControlButton("CC", "Legendas") {
+      TrackSelectionDialogBuilder(this, "Legendas", exo, C.TRACK_TYPE_TEXT).build().show()
+      pv.showController()
+    })
+    dock.addView(playerControlButton("★", "Elenco") {
+      openMovieCast(movie)
+      pv.showController()
+    })
+    dock.addView(playerControlButton("↩", "Sair") { leavePlayer() })
+    pv.setControllerVisibilityListener(PlayerView.ControllerVisibilityListener { visibility ->
+      val controlsVisible = visibility == View.VISIBLE
+      dock.visibility = if (controlsVisible) View.VISIBLE else View.GONE
+      if (!controlsVisible) {
+        diagnosticsVisible = false
+        diagnosticPanel?.visibility = View.GONE
+      }
+    })
+    pv.hideController()
 
         exo.addListener(object : Player.Listener {
             override fun onTracksChanged(tracks: Tracks) { updateDiagnostics() }
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (playbackState == Player.STATE_BUFFERING) bufferingEvents++
+                if (playbackState == Player.STATE_ENDED) saveCurrentProgress(syncRemote = true, completed = true)
                 updateDiagnostics()
             }
             override fun onPlayerError(error: PlaybackException) {
-                latestError = error.errorCodeName
+                var cause: Throwable? = error
+                var httpError: HttpDataSource.InvalidResponseCodeException? = null
+                while (cause != null && httpError == null) {
+                    httpError = cause as? HttpDataSource.InvalidResponseCodeException
+                    cause = cause.cause
+                }
+                val redirectLocation = httpError?.headerFields?.entries
+                    ?.firstOrNull { it.key?.equals("Location", ignoreCase = true) == true }
+                    ?.value?.firstOrNull()
+                val redirectScheme = redirectLocation?.let {
+                    android.net.Uri.parse(it).scheme ?: "relative"
+                }
+                latestError = httpError?.let {
+                    "HTTP ${it.responseCode}" + (redirectScheme?.let { scheme -> " → $scheme" } ?: "")
+                } ?: error.errorCodeName
                 updateDiagnostics()
-                msg("Erro de reprodução: ${error.errorCodeName}")
+                msg("Erro de reprodução: $latestError")
             }
         })
         exo.addAnalyticsListener(object : AnalyticsListener {
@@ -475,11 +984,16 @@ class MainActivity : Activity() {
         val item = MediaItem.Builder().setUri(url).apply {
             if (movie.extension.equals("m3u8", true)) setMimeType(MimeTypes.APPLICATION_M3U8)
         }.build()
-        exo.setMediaItem(item)
+        val savedPosition = activeProfileId?.let { profile -> progressStore.get(profile, movie.id.toString()) }
+            ?.takeIf { !it.completed && it.positionMs > 10_000L }
+            ?.positionMs ?: 0L
+        exo.setMediaItem(item, savedPosition)
         exo.prepare()
         exo.playWhenReady = true
         uiHandler.removeCallbacks(refresh)
         uiHandler.post(refresh)
+        uiHandler.removeCallbacks(saveProgressTick)
+        uiHandler.postDelayed(saveProgressTick, 5_000L)
     }
 
     private fun updateDiagnostics() {
@@ -515,13 +1029,42 @@ class MainActivity : Activity() {
         """.trimIndent()
     }
 
+    private fun saveCurrentProgress(syncRemote: Boolean, completed: Boolean = false) {
+        val exo = player ?: return
+        val movie = currentPlayingMovie ?: return
+        val profile = activeProfileId ?: return
+        val position = exo.currentPosition.coerceAtLeast(0)
+        val rawDuration = exo.duration
+        val duration = if (rawDuration == C.TIME_UNSET || rawDuration < 0) 0L else rawDuration
+        if (!completed && position < 10_000L) return
+        val isCompleted = completed || (duration > 0L && position >= (duration - 45_000L).coerceAtLeast(0L))
+        val progress = WatchProgress(
+            mediaId = movie.id.toString(),
+            title = movie.title,
+            posterUrl = movie.posterUrl,
+            positionMs = if (isCompleted && duration > 0L) duration else position,
+            durationMs = duration,
+            updatedAt = System.currentTimeMillis(),
+            completed = isCompleted
+        )
+        progressStore.save(profile, progress)
+        if (syncRemote) worker.execute { syncProgressItem(profile, progress) }
+    }
+
     private fun stopPlayer() {
+        saveCurrentProgress(syncRemote = true)
         uiHandler.removeCallbacks(refresh)
+        uiHandler.removeCallbacks(saveProgressTick)
         playerView?.player = null
         playerView = null
         player?.release()
         player = null
+        currentPlayingMovie = null
         diagnosticView = null
+    diagnosticPanel = null
+    playerActionDock = null
+    diagnosticsVisible = false
+    setPlayerImmersive(false)
     }
 
     private fun leavePlayer() {
@@ -544,6 +1087,10 @@ class MainActivity : Activity() {
         }
     }
 
-    override fun onStop() { super.onStop(); player?.pause() }
-    override fun onDestroy() { stopPlayer(); worker.shutdownNow(); super.onDestroy() }
+    override fun onStop() { super.onStop(); player?.pause(); saveCurrentProgress(syncRemote = true) }
+    override fun onDestroy() { stopPlayer(); worker.shutdown(); super.onDestroy() }
+
+    private companion object {
+        const val CONTINUE_CATEGORY_ID = -2
+    }
 }

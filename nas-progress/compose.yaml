@@ -1,0 +1,16 @@
+services:
+  progress-sync:
+    build: .
+    container_name: lunastream-progress
+    restart: unless-stopped
+    environment:
+      PROGRESS_SYNC_TOKEN: ${PROGRESS_SYNC_TOKEN:?Crie um token forte no arquivo .env}
+      PROGRESS_DB_PATH: /data/progress.sqlite3
+      PORT: "8787"
+    ports:
+      - "8787:8787"
+    volumes:
+      - progress-data:/data
+
+volumes:
+  progress-data:

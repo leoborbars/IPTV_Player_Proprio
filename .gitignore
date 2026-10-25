@@ -6,3 +6,6 @@ app/build/
 *.iml
 *.apk
 .tooling/
+/nas-progress/.env
+/nas-progress/__pycache__/
+/nas-progress/data/
