@@ -31,10 +31,14 @@ data class MovieDetails(
     val posterUrl: String? = null,
     val backdropUrl: String? = null,
     val plot: String? = null,
+    val cast: String? = null,
+    val director: String? = null,
     val genre: String? = null,
     val year: String? = null,
     val duration: String? = null,
-    val rating: String? = null
+    val rating: String? = null,
+    val technicalVideo: String? = null,
+    val technicalAudio: String? = null
 )
 
 /** Xtream API para catálogo VOD autorizado. Não acessa endpoints de canais ao vivo. */
@@ -99,10 +103,14 @@ class XtreamClient(val server: String, val username: String, val password: Strin
             posterUrl = safeImageUrl(info.opt("movie_image")) ?: safeImageUrl(movieData.opt("stream_icon")),
             backdropUrl = backdrop,
             plot = textValue(info.opt("plot")),
+            cast = textValue(info.opt("cast")) ?: textValue(info.opt("actors")),
+            director = textValue(info.opt("director")),
             genre = textValue(info.opt("genre")),
             year = release?.let { YEAR_REGEX.find(it)?.value },
             duration = duration,
-            rating = textValue(info.opt("rating"))
+            rating = textValue(info.opt("rating")),
+            technicalVideo = technicalMetadata(info.opt("video")) ?: technicalMetadata(movieData.opt("video")),
+            technicalAudio = technicalMetadata(info.opt("audio")) ?: technicalMetadata(movieData.opt("audio"))
         )
     }
 
@@ -203,6 +211,12 @@ class XtreamClient(val server: String, val username: String, val password: Strin
     private fun textValue(value: Any?): String? = when (value) {
         null, JSONObject.NULL -> null
         else -> value.toString().trim().takeIf { it.isNotEmpty() && !it.equals("null", true) }
+    }
+
+    private fun technicalMetadata(value: Any?): String? = when (value) {
+        null, JSONObject.NULL -> null
+        is JSONObject, is JSONArray -> value.toString()
+        else -> textValue(value)
     }
 
     private fun flexibleInt(value: Any?): Int? = when (value) {
