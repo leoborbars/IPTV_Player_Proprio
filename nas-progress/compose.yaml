@@ -1,7 +1,7 @@
 services:
   progress-sync:
     build: .
-    container_name: lunastream-progress
+    container_name: lesil-progress
     restart: unless-stopped
     environment:
       PROGRESS_SYNC_TOKEN: ${PROGRESS_SYNC_TOKEN:?Crie um token forte no arquivo .env}

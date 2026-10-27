@@ -19,6 +19,6 @@
     <item
         android:width="82dp"
         android:height="82dp"
-        android:drawable="@drawable/ic_lunastream_moon"
+        android:drawable="@drawable/lesil_icon"
         android:gravity="center" />
 </layer-list>

@@ -21,9 +21,9 @@ adb install -r .\app\build\outputs\apk\debug\app-debug.apk
 
 O primeiro comando deve mostrar a TV como `device`. Se mostrar `unauthorized`, confirme a autorização na tela da TV.
 
-## Validar o Marco 1 — Home LunaStream
+## Validar a Home — Le&Sil Stream
 
-1. Abra **LunaStream** e conecte ao catálogo Xtream autorizado. A Home deve mostrar apenas títulos/artes retornados pelo provedor; sem backdrop, deve usar o pôster ou placeholder.
+1. Abra **Le&Sil Stream** e conecte ao catálogo Xtream autorizado. A Home deve mostrar apenas títulos/artes retornados pelo provedor; sem backdrop, deve usar o pôster ou placeholder.
 2. Navegue por todos os itens da sidebar com D-pad, OK e Voltar. Confirme foco visível e que a página rola até todas as fileiras.
 3. Nas fileiras de filmes e séries, mova o foco horizontalmente; o cartão em foco deve ficar evidente e rolar para dentro da tela.
 4. Abra **Filmes**, selecione uma categoria real e pesquise um título. Confirme que a lista apresenta dados do catálogo e que OK abre as informações disponíveis.
@@ -54,7 +54,7 @@ Use `N/D` quando uma informação não estiver disponível. Não deduza HDR ativ
 5. **Dolby TrueHD/Atmos lossless:** registre a faixa e o comportamento. ARC convencional não transporta TrueHD lossless; se houver faixa alternativa, selecione-a e repita.
 6. **DTS 5.1 e DTS-HD MA:** teste separadamente, se disponíveis. Registre a faixa selecionada e o formato que o Denon efetivamente informa.
 7. **Controles e estabilidade:** pause/retome, avance para 10 e 30 minutos, troque áudio e legenda, desligue legenda, saia e reabra o filme. Se viável, interrompa a rede por alguns segundos e registre a recuperação ou erro.
-8. **Comparação entre players:** use o mesmo conteúdo, faixa de áudio/legenda e configurações de saída no LunaStream, TiviMate e XCIPTV. Anote somente observações reproduzíveis; não atribua diferenças a recompressão sem evidência.
+8. **Comparação entre players:** use o mesmo conteúdo, faixa de áudio/legenda e configurações de saída no Le&Sil Stream, TiviMate e XCIPTV. Anote somente observações reproduzíveis; não atribua diferenças a recompressão sem evidência.
 
 ## Relato de falha
 

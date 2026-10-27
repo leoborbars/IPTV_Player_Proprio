@@ -11,8 +11,14 @@ val localProperties = Properties().apply {
 }
 
 fun buildConfigString(value: String) = "\"${value.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r")}\""
-val defaultProgressEndpoint = localProperties.getProperty("lunastream.progressSyncEndpoint", "http://192.168.3.47:8787")
-val defaultProgressToken = localProperties.getProperty("lunastream.progressSyncToken", "")
+val defaultProgressEndpoint = localProperties.getProperty(
+    "lesil.progressSyncEndpoint",
+    localProperties.getProperty("lunastream.progressSyncEndpoint", "http://192.168.3.47:8787")
+)
+val defaultProgressToken = localProperties.getProperty(
+    "lesil.progressSyncToken",
+    localProperties.getProperty("lunastream.progressSyncToken", "")
+)
 
 android {
     namespace = "br.com.iptvlab"
@@ -22,8 +28,8 @@ android {
         applicationId = "br.com.iptvlab"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.2-lunastream"
+        versionCode = 3
+        versionName = "0.3-lesil"
         buildConfigField("String", "DEFAULT_PROGRESS_SYNC_ENDPOINT", buildConfigString(defaultProgressEndpoint))
         buildConfigField("String", "DEFAULT_PROGRESS_SYNC_TOKEN", buildConfigString(defaultProgressToken))
     }

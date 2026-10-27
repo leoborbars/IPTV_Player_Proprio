@@ -1,12 +1,12 @@
-# LunaStream — IPTV Player Android
+# Le&Sil Stream — IPTV Player Android
 
-Aplicativo VOD para Android TV/Google TV e Android, com catálogo Xtream Codes, navegação por controle remoto e reprodução pelo Media3/ExoPlayer. A interface foi evoluída para o estilo LunaStream/TiviMate sem substituir o cliente Xtream nem o pipeline de reprodução existente.
+Aplicativo VOD para Android TV/Google TV e Android, com catálogo Xtream Codes, navegação por controle remoto e reprodução pelo Media3/ExoPlayer. A interface usa Views nativas e mantém o cliente Xtream e o pipeline de reprodução Media3 existentes.
 
 **Repositório:** [leoborbars/IPTV_Player_Proprio](https://github.com/leoborbars/IPTV_Player_Proprio)
 
 ## Estado atual
 
-- Home e catálogo de filmes com categorias, busca, capas, arte de fundo e navegação por D-pad.
+- Home e catálogo de filmes com categorias, busca, capas, arte de fundo e navegação por D-pad. Na TV, o painel de categorias desliza sem deslocar o cabeçalho do filme, e a grade mantém o tamanho das capas durante a navegação.
 - Catálogo de séries disponível; temporadas e episódios ainda precisam da implementação da próxima etapa.
 - Player Media3 existente com controles e diagnóstico de reprodução.
 - Progresso local de filmes e fileira **Continuar**.
@@ -14,9 +14,11 @@ Aplicativo VOD para Android TV/Google TV e Android, com catálogo Xtream Codes, 
 - Em **Configurações**, o app mostra o estado da conexão com o NAS.
 - O item **Filmes 4K** foi removido do menu lateral. Conteúdos 4K ainda podem aparecer conforme as categorias e os dados fornecidos pelo catálogo.
 
-A versão Android é `0.2-lunastream` (APK Debug). A compilação foi verificada e o APK foi instalado na TCL e no Motorola Edge 70 Pro. Confirme a navegação e a reprodução 4K HDR/áudio multicanal nos equipamentos; a sinalização informada pelo app não substitui a validação da imagem na TV nem do formato recebido pelo receiver. Consulte [TESTE_NA_TCL.md](TESTE_NA_TCL.md) e [testes_4k_audio.csv](testes_4k_audio.csv).
+A versão Android é `0.3-lesil` (APK Debug). O ícone Le&Sil integrado ao app está em `app/src/main/res/drawable-nodpi/lesil_icon.png`. Confirme a navegação e a reprodução 4K HDR/áudio multicanal nos equipamentos; a sinalização informada pelo app não substitui a validação da imagem na TV nem do formato recebido pelo receiver. Consulte [TESTE_NA_TCL.md](TESTE_NA_TCL.md) e [testes_4k_audio.csv](testes_4k_audio.csv).
 
 O serviço no NAS respondeu `{"status":"ok"}` em `/health`. A sincronização entre os dois aparelhos também foi exercitada após a migração do perfil antigo: o celular recuperou registros que já estavam salvos pela TV.
+
+Em 27/10/2026, o APK Debug foi instalado na TCL e a navegação dos filmes foi testada por ADB: 20 linhas percorridas, movimento lateral entre capas, retorno da primeira coluna para **Categorias** e entrada/saída da categoria **DC**. O app permaneceu aberto e o log não mostrou exceção fatal nesse percurso. Esse teste não incluiu reprodução de vídeo. Os vídeos `Fotos_iptvplayer/video1.mp4` e `video4.mp4` serviram de referência para o movimento dos painéis.
 
 ## Requisitos
 
@@ -43,15 +45,15 @@ O APK de depuração fica em `app/build/outputs/apk/debug/app-debug.apk`.
 O app permite configurar o endereço e o token em **Configurações → Sincronização NAS**. Para já deixar os valores preenchidos nas novas instalações feitas com um APK local, acrescente estas propriedades ao `local.properties` da raiz, preservando qualquer linha `sdk.dir` que já exista:
 
 ```properties
-lunastream.progressSyncEndpoint=http://192.168.3.47:8787
-lunastream.progressSyncToken=COLE_AQUI_O_MESMO_TOKEN_DO_NAS
+lesil.progressSyncEndpoint=http://192.168.3.47:8787
+lesil.progressSyncToken=COLE_AQUI_O_MESMO_TOKEN_DO_NAS
 ```
 
 Edite localmente com `notepad .\local.properties`, sem compartilhar o conteúdo. Faça uma nova compilação depois de alterar as propriedades. Na primeira inicialização, o app salva os padrões no armazenamento criptografado pelo Android Keystore; depois, os campos podem ser alterados nas configurações do app. O token fica incorporado ao APK construído com esse arquivo, então proteja o APK e não envie `local.properties` nem o token ao GitHub.
 
 ## Configurar a sincronização no NAS/OpenMediaVault
 
-O serviço LunaStream Progress Sync roda na Raspberry Pi, usa SQLite em um volume persistente do Docker e atende pela porta TCP `8787`. No ambiente instalado, o NAS usa `192.168.3.47`. Reserve esse endereço no roteador ou ajuste o endereço padrão acima se ele mudar. Mantenha o serviço acessível apenas pela rede local: não configure encaminhamento da porta `8787` para a internet.
+O serviço Le&Sil Progress Sync roda na Raspberry Pi, usa SQLite em um volume persistente do Docker e atende pela porta TCP `8787`. No ambiente instalado, o NAS usa `192.168.3.47`. Reserve esse endereço no roteador ou ajuste o endereço padrão acima se ele mudar. Mantenha o serviço acessível apenas pela rede local: não configure encaminhamento da porta `8787` para a internet.
 
 ### 1. Copiar os arquivos do serviço
 
@@ -96,7 +98,7 @@ curl http://127.0.0.1:8787/health
 
 Se o Docker responder `permission denied` para `/var/run/docker.sock`, execute os comandos Docker com `sudo`, por exemplo `sudo docker compose up -d --build`. A resposta do teste de saúde deve ser `{"status":"ok"}`. De outro aparelho na mesma rede, teste também `http://192.168.3.47:8787/health` no navegador.
 
-O `compose.yaml` publica a porta `8787` e guarda o banco em `progress-data`, que é um volume persistente do Docker. Para parar e iniciar novamente, use `docker compose down` e `docker compose up -d`; não use `docker compose down -v`, pois `-v` apaga o volume com os dados. Para atualizar o serviço após mudanças em `server.py` ou nos arquivos do NAS, copie os arquivos atualizados e rode `docker compose up -d --build`.
+O `compose.yaml` publica a porta `8787` e guarda o banco em `progress-data`, que é um volume persistente do Docker. A política `restart: unless-stopped` inicia o container novamente após a reinicialização do NAS, desde que o Docker esteja ativo e o serviço não tenha sido parado manualmente. Para parar e iniciar novamente, use `docker compose down` e `docker compose up -d`; não use `docker compose down -v`, pois `-v` apaga o volume com os dados. Para atualizar o serviço após mudanças em `server.py` ou nos arquivos do NAS, copie os arquivos atualizados e rode `docker compose up -d --build`.
 
 ### 4. Configurar TV e celular
 
@@ -131,10 +133,17 @@ Confirme que o dispositivo aparece como `device` antes de instalar. Para o Motor
 
 ## Usar o aplicativo
 
-1. Abra o LunaStream e configure o servidor Xtream, usuário e senha. Informe o esquema (`https://` ou `http://`) e a porta quando necessário.
+1. Abra o Le&Sil Stream e configure o servidor Xtream, usuário e senha. Informe o esquema (`https://` ou `http://`) e a porta quando necessário.
 2. Navegue com o controle remoto/D-pad pelo menu lateral e pelas fileiras do catálogo. A disponibilidade de capas, sinopses, backdrops e metadados depende do provedor.
 3. Abra um filme para reproduzir no player Media3. O progresso salvo aparece em **Continuar** e pode ser retomado após fechar o app.
 4. Para usar o progresso entre TV e celular, configure o NAS nos dois dispositivos com o mesmo nome de usuário Xtream, endereço do NAS e token.
+
+### Navegar pelo catálogo na TV
+
+- Em **Filmes**, percorra as categorias com ↑/↓, pressione **OK** para selecionar a destacada e depois → para entrar na grade.
+- Na grade, ↑/↓ percorrem as linhas de capas e ←/→ mudam de filme. O título, a sinopse e o plano de fundo acompanham o filme selecionado enquanto a parte superior da tela permanece fixa.
+- Na primeira capa de uma linha, pressione ← para abrir **Categorias**; pressione ← novamente, já com uma categoria em foco, para abrir o menu principal. Pressione → para voltar à grade.
+- As capas são carregadas conforme a rolagem. A disponibilidade da arte depende dos dados enviados pelo servidor Xtream.
 
 ## Segurança e limites
 

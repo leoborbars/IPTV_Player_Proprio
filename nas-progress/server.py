@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""LAN-only progress sync API for LunaStream. Uses only Python's standard library."""
+"""LAN-only progress sync API for Le&Sil Stream. Uses only Python's standard library."""
 import hmac
 import json
 import os
@@ -40,7 +40,7 @@ def connect_db():
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "LunaProgress/1.0"
+    server_version = "LeSilProgress/1.0"
 
     def log_message(self, _format, *_args):
         # Request URLs and payloads can identify watched media; keep logs quiet by default.

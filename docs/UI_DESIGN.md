@@ -1,8 +1,8 @@
-# LunaStream UI — Marco 1
+# Le&Sil Stream UI — Marco 1
 
 ## Identidade e escopo
 
-A Home segue `LunaStream_Codex_Kit/referencias_visuais/01_home_escolhida.png` como referência de hierarquia, espaçamento e paleta. A imagem é apenas uma referência: a interface é composta por Views reais e as artes vêm do catálogo Xtream. Os exemplos fictícios das referências não aparecem no app.
+A Home segue `LeSil_Codex_Kit/referencias_visuais/01_home_escolhida.png` como referência de hierarquia, espaçamento e paleta. A imagem é apenas uma referência: a interface é composta por Views reais e as artes vêm do catálogo Xtream. Os exemplos fictícios das referências não aparecem no app.
 
 Paleta central deste marco: fundo `#050A11`, superfícies `#0B1724`/`#101D2A`, texto `#F4F7FB`, secundário `#A9BDD0` e ciano `#2EA9FF`. A sidebar e os cartões têm contorno/escala ao receber foco. A animação de foco dura 150 ms.
 

@@ -1,13 +1,13 @@
-# Serviço de sincronização de progresso no OpenMediaVault
+# Le&Sil Progress Sync no OpenMediaVault
 
-Este serviço próprio mantém o progresso de reprodução do LunaStream sincronizado entre dispositivos na rede local. Ele roda em Docker Compose, usa SQLite num volume persistente e não recebe usuário/senha Xtream nem URLs dos vídeos.
+Este serviço próprio mantém o progresso de reprodução do Le&Sil Stream sincronizado entre dispositivos na rede local. Ele roda em Docker Compose, usa SQLite num volume persistente e não recebe usuário/senha Xtream nem URLs dos vídeos.
 
 ## Ambiente instalado
 
 - NAS/Raspberry Pi com OpenMediaVault: `192.168.3.47`.
 - Pasta no NAS: `/home/pi/nas-progress`.
 - Porta da API: `8787`.
-- Container: `lunastream-progress`.
+- Container: `lesil-progress`.
 - Volume Docker: `nas-progress_progress-data` (o nome pode variar conforme a pasta/projeto Compose).
 
 Reserve o endereço do NAS no roteador para que o IP não mude. Mantenha a porta `8787` acessível somente na rede local; não configure encaminhamento externo no roteador.
@@ -56,7 +56,7 @@ Se houver `permission denied` para `/var/run/docker.sock`, execute com `sudo`, p
 
 Para reiniciar, use `docker compose restart`. Para reconstruir após atualizar `server.py` ou o `Dockerfile`, copie os arquivos e rode `docker compose up -d --build`. `docker compose down` mantém o volume; **não** use `docker compose down -v`, pois `-v` apaga o banco persistente.
 
-## Configurar o LunaStream
+## Configurar o Le&Sil Stream
 
 Há duas formas:
 
@@ -64,8 +64,8 @@ Há duas formas:
 2. Para preencher esses valores por padrão num APK local, acrescente ao `local.properties` da raiz do projeto, sem apagar `sdk.dir`:
 
    ```properties
-   lunastream.progressSyncEndpoint=http://192.168.3.47:8787
-   lunastream.progressSyncToken=O_MESMO_TOKEN_DO_ARQUIVO_ENV
+   lesil.progressSyncEndpoint=http://192.168.3.47:8787
+   lesil.progressSyncToken=O_MESMO_TOKEN_DO_ARQUIVO_ENV
    ```
 
    Compile novamente e instale o APK. O app importa os padrões e armazena as configurações com Android Keystore. `local.properties` é ignorado pelo Git; o token também fica incorporado ao APK produzido, então proteja o APK.

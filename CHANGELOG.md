@@ -1,13 +1,20 @@
 # Changelog
 
-## 0.2-lunastream — 17/10/2026
+## 0.3-lesil — 26/10/2026
+
+- Rebatizado o aplicativo como **Le&Sil Stream**.
+- Substituída a lua pelo ícone de reprodução fornecido em `Fotos_iptvplayer/icone.png` no launcher, banner da TV e menu lateral.
+- Renomeados os componentes internos de interface e atualizada a documentação e identificação do serviço de sincronização.
+- Mantidos o identificador Android e o namespace de hash do progresso para atualizar as instalações existentes sem perder os dados locais ou do NAS.
+
+## 0.2 — 17/10/2026
 
 - Implementada Home cinematográfica em Views nativas, com sidebar focável, hero alimentado por catálogo real, carrosséis de filmes recentes/Filmes 4K/séries e placeholders sem arte.
 - Adicionada navegação por D-pad para categorias, busca de filmes e lista de títulos limitada a 80 itens renderizados por vez.
 - Xtream agora lê pôsteres, categoria, data `added`, rating e catálogo de séries; consulta `get_vod_info` apenas para o filme escolhido como destaque.
 - O card 4K depende do nome de categoria “Filmes 4K” ou “Filmes UHD”; nenhum formato técnico é deduzido desse nome.
 - Mantido o player Media3/ExoPlayer, `PlayerView`, seleção de áudio/legendas e diagnóstico existentes. O retorno do player volta para a tela de origem.
-- Atualizado nome/banner do app para LunaStream e versão para `0.2-lunastream`.
+- Adicionado nome e banner de marca ao aplicativo.
 - Build `:app:assembleDebug` concluído; validação física na TCL/Denon ainda pendente.
 
 ## Continuação do P0 — 17/10/2026

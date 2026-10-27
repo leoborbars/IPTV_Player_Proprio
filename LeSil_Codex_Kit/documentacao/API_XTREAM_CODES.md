@@ -1,4 +1,4 @@
-# Xtream Codes Player API — documentação de apoio ao projeto LunaStream
+# Xtream Codes Player API — documentação de apoio ao projeto Le&Sil Stream
 
 **Escopo:** apenas filmes e séries VOD. Os endpoints abaixo são padrões comuns encontrados em implementações Xtream Codes/XUI, documentados principalmente por projetos da comunidade (não há garantia de que todos existam ou tenham respostas idênticas no seu provedor). Validar com o próprio serviço autorizado, com credenciais configuradas localmente no aplicativo e **sem registrar URLs secretas em logs**.
 

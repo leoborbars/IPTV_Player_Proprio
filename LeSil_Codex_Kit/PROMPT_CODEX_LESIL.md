@@ -1,6 +1,6 @@
-# PROMPT MESTRE PARA CODEX — LUNASTREAM, UI PREMIUM + XTREAM CODES
+# PROMPT MESTRE PARA CODEX — LE&SIL STREAM, UI PREMIUM + XTREAM CODES
 
-**Leia este documento inteiro e os três arquivos PNG da pasta `referencias_visuais/` antes de modificar qualquer código.** Responda e documente em português do Brasil. Você é um desenvolvedor Android sênior especializado em Google TV, Kotlin, UX para controle remoto, AndroidX Media3/ExoPlayer e APIs de catálogo Xtream Codes. Sua missão é EVOLUIR o aplicativo Android que JÁ ESTÁ FUNCIONANDO no meu workspace, preservando seu player e autenticação, e construir a interface LunaStream baseada nas referências fornecidas.
+**Leia este documento inteiro e os três arquivos PNG da pasta `referencias_visuais/` antes de modificar qualquer código.** Responda e documente em português do Brasil. Você é um desenvolvedor Android sênior especializado em Google TV, Kotlin, UX para controle remoto, AndroidX Media3/ExoPlayer e APIs de catálogo Xtream Codes. Sua missão é EVOLUIR o aplicativo Android que JÁ ESTÁ FUNCIONANDO no meu workspace, preservando seu player e autenticação, e construir a interface Le&Sil Stream baseada nas referências fornecidas.
 
 ## 0. O QUE EXECUTAR NESTA SESSÃO
 
@@ -25,7 +25,7 @@ Os três PNGs da pasta `referencias_visuais` representam o **primeiro conjunto d
 
 ### Linguagem visual
 
-- Nome provisório: **LunaStream**; tudo em **português brasileiro**.
+- Nome do aplicativo: **Le&Sil Stream**; tudo em **português brasileiro**.
 - Tela 16:9, visual de Google TV, fundo preto/azul muito escuro, gradientes suaves, detalhes azul/ciano, foco branco/azul luminoso; cantos discretamente arredondados; estética cinematográfica elegante.
 - NUNCA usar um screenshot como plano de fundo estático para simular interface funcional. Criar elementos reais (textos, cards, foco, navegação, imagens remotas e controles).
 - O banner/filmes fictícios "Eclipse 2049" e outros títulos nas imagens são **dados demonstrativos visuais**, não catálogos reais, não devem ser inventados nas consultas do provedor. Mostrar título/arte real que o servidor fornece; em modo de pré-visualização local pode haver mocks claramente indicados como fictícios.

@@ -5,20 +5,27 @@ import android.graphics.BitmapFactory
 import android.util.LruCache
 import android.widget.ImageView
 import java.io.ByteArrayOutputStream
+import java.lang.ref.WeakReference
 import java.net.HttpURLConnection
 import java.net.URL
-import java.util.concurrent.Executors
+import java.util.concurrent.LinkedBlockingDeque
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 
 /** Loads only provider artwork and keeps a small in-memory cache for TV catalog rows. */
-object LunaArtworkLoader {
+object LeSilArtworkLoader {
     private const val MAX_DOWNLOAD_BYTES = 8 * 1024 * 1024
-    private val executor = Executors.newFixedThreadPool(3)
+    private val queue = LinkedBlockingDeque<Runnable>(48)
+    private val executor = ThreadPoolExecutor(3, 3, 0L, TimeUnit.MILLISECONDS, queue).apply {
+        prestartAllCoreThreads()
+    }
     private val cache = object : LruCache<String, Bitmap>(24 * 1024 * 1024) {
         override fun sizeOf(key: String, value: Bitmap): Int = value.allocationByteCount
     }
 
     fun into(url: String?, target: ImageView, maxDimension: Int = 900) {
         val key = url?.let { "$it#$maxDimension" }
+        if (target.tag == key && target.drawable != null) return
         target.tag = key
         target.setImageDrawable(null)
         if (url.isNullOrBlank()) return
@@ -27,12 +34,21 @@ object LunaArtworkLoader {
             target.setImageBitmap(it)
             return
         }
-        executor.execute {
-            val bitmap = decode(url, maxDimension) ?: return@execute
-            cache.put(key, bitmap)
-            target.post {
-                if (target.tag == key) target.setImageBitmap(bitmap)
+        val targetReference = WeakReference(target)
+        val task = Runnable {
+            val currentTarget = targetReference.get() ?: return@Runnable
+            if (currentTarget.tag != key) return@Runnable
+            val bitmap = cache.get(key) ?: decode(url, maxDimension)?.also { cache.put(key, it) }
+                ?: return@Runnable
+            currentTarget.post {
+                if (currentTarget.tag == key) currentTarget.setImageBitmap(bitmap)
             }
+        }
+        // GridView can recycle dozens of cards during one long D-pad press.
+        // Serve the newest visible cards first and drop obsolete queued work.
+        if (!queue.offerFirst(task)) {
+            queue.pollLast()
+            queue.offerFirst(task)
         }
     }
 

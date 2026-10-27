@@ -2,24 +2,31 @@ package br.com.iptvlab
 
 import android.content.Context
 import android.app.AlertDialog
+import android.animation.Animator
+import android.animation.AnimatorListenerAdapter
+import android.animation.ValueAnimator
 import android.graphics.Color
 import android.graphics.PorterDuff
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.os.SystemClock
 import android.text.InputType
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.animation.DecelerateInterpolator
+import android.widget.AbsListView
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.GridView
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 
-data class LunaHomeData(
+data class LeSilHomeData(
     val movieCategories: List<CatalogEntry> = emptyList(),
     val featuredMovie: CatalogEntry? = null,
     val featuredDetails: MovieDetails? = null,
@@ -34,7 +41,7 @@ data class LunaHomeData(
     val errorActionLabel: String = "Tentar novamente"
 )
 
-data class LunaHomeActions(
+data class LeSilHomeActions(
     val onNavigate: (String) -> Unit,
     val onRetry: () -> Unit,
     val onPlay: (CatalogEntry) -> Unit,
@@ -46,13 +53,18 @@ data class LunaHomeActions(
 )
 
 /** Native Views home shell. It deliberately leaves the existing Media3 player Activity intact. */
-class LunaHomeScreen(private val context: Context, private val actions: LunaHomeActions) {
+class LeSilHomeScreen(private val context: Context, private val actions: LeSilHomeActions) {
     private val density = context.resources.displayMetrics.density
     private val screenWidthDp = context.resources.configuration.screenWidthDp
-    private val sidebarWidth = dp((screenWidthDp * 0.18f).toInt().coerceIn(190, 250))
+    private val screenHeightDp = context.resources.configuration.screenHeightDp
+    private val shortScreen = screenHeightDp < 500
+    private val sidebarWidth = dp(
+        if (shortScreen) (screenWidthDp * 0.19f).toInt().coerceIn(170, 190)
+        else (screenWidthDp * 0.18f).toInt().coerceIn(190, 250)
+    )
     private val categoryPaneWidth = dp((screenWidthDp * 0.23f).toInt().coerceIn(205, 270))
 
-    fun home(data: LunaHomeData): View {
+    fun home(data: LeSilHomeData): View {
         val content = verticalScroll()
         content.addView(hero(data))
 
@@ -155,14 +167,21 @@ class LunaHomeScreen(private val context: Context, private val actions: LunaHome
                 marginEnd = dp((rightmostPosterInsetDp - catalogHorizontalInsetDp).coerceAtLeast(0))
             })
         }
-        val grid = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
-        val gridScroll = ScrollView(context).apply {
-            isFillViewport = false
+        val grid = GridView(context).apply {
+            numColumns = GRID_COLUMNS
+            columnWidth = dp(CATALOG_POSTER_WIDTH_DP)
+            horizontalSpacing = dp(CATALOG_POSTER_GAP_DP)
+            verticalSpacing = dp(8)
+            stretchMode = GridView.NO_STRETCH
+            gravity = Gravity.START
             isVerticalScrollBarEnabled = false
-            isSmoothScrollingEnabled = true
+            isSmoothScrollbarEnabled = true
+            isFocusable = true
+            isFocusableInTouchMode = false
+            selector = android.graphics.drawable.ColorDrawable(Color.TRANSPARENT)
+            cacheColorHint = Color.TRANSPARENT
             descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
             clipToPadding = true
-            addView(grid, FrameLayout.LayoutParams(-1, -2))
         }
         val catalogBottom = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
@@ -170,23 +189,30 @@ class LunaHomeScreen(private val context: Context, private val actions: LunaHome
             setPadding(horizontalInset, 0, horizontalInset, dp(8))
             clipChildren = true
             addView(catalogHeader, LinearLayout.LayoutParams(-1, dp(36)))
-            addView(gridScroll, LinearLayout.LayoutParams(-1, 0, 1f))
+            addView(grid, LinearLayout.LayoutParams(-1, 0, 1f))
         }
         val catalogHeight = dp((context.resources.configuration.screenHeightDp * 0.53f).toInt().coerceAtLeast(220))
         content.addView(catalogBottom, FrameLayout.LayoutParams(-1, catalogHeight, Gravity.BOTTOM))
+        val focusAnchor = View(context).apply {
+            isFocusable = false
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
+        content.addView(focusAnchor, FrameLayout.LayoutParams(1, 1, Gravity.TOP or Gravity.START))
         var activeMovieId: Int? = null
         var activeMovieDetails: MovieDetails? = null
+        var focusedMoviePosition = 0
+        var visibleMovieCount = movies.size
+        var visibleMovies = movies
+        var focusRequestGeneration = 0
+        var deferMovieChildFocusUntil = 0L
         fun showMovie(movie: CatalogEntry, details: MovieDetails?, position: Int, total: Int) {
             activeMovieId = movie.id
             activeMovieDetails = details
             renderMovieCatalogHero(hero, movie, details, position, total)
         }
         fun focusMovie(movie: CatalogEntry, position: Int, total: Int) {
-            val focusedRow = (position - 1) / GRID_COLUMNS
-            gridScroll.post {
-                val row = grid.getChildAt(focusedRow)
-                if (row != null) gridScroll.smoothScrollTo(0, row.top)
-            }
+            focusRequestGeneration++
+            focusedMoviePosition = position - 1
             if (activeMovieId != movie.id) showMovie(movie, null, position, total)
             else renderMovieCatalogHero(hero, movie, activeMovieDetails, position, total)
             onMovieFocus(movie) { details ->
@@ -196,13 +222,106 @@ class LunaHomeScreen(private val context: Context, private val actions: LunaHome
                 }
             }
         }
+        fun requestMovieFocus(position: Int, attempt: Int = 0, requestId: Int = 0): Boolean {
+            if (visibleMovieCount == 0) return searchButton.requestFocus()
+            val target = position.coerceIn(0, visibleMovieCount - 1)
+            if (attempt == 0 && (focusedMoviePosition != target || activeMovieId != visibleMovies[target].id)) {
+                focusMovie(visibleMovies[target], target + 1, visibleMovieCount)
+            }
+            val activeRequest = if (attempt == 0) ++focusRequestGeneration else requestId
+            if (attempt > 0 && (activeRequest != focusRequestGeneration ||
+                        !(focusAnchor.hasFocus() || grid.hasFocus()))) return false
+            focusedMoviePosition = target
+            // The list holds focus while a target row is being attached. Mark its
+            // left edge too, so LEFT still opens Categories during that interval.
+            val edgeTag = if (target % GRID_COLUMNS == 0) CATALOG_LEFT_EDGE_TAG else null
+            grid.tag = edgeTag
+            focusAnchor.tag = edgeTag
+            val waitForPanels = deferMovieChildFocusUntil - SystemClock.uptimeMillis()
+            if (attempt == 0 && waitForPanels > 0) {
+                grid.descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
+                focusAnchor.isFocusableInTouchMode = true
+                if (!focusAnchor.requestFocus()) {
+                    grid.descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
+                    return false
+                }
+                grid.setSelection(target)
+                grid.postDelayed({
+                    if (activeRequest == focusRequestGeneration && focusAnchor.hasFocus()) requestMovieFocus(target)
+                }, waitForPanels + 16)
+                return true
+            }
+            val child = grid.getChildAt(target - grid.firstVisiblePosition)
+            val fullyVisible = child?.isShown == true && child.top >= grid.paddingTop &&
+                child.bottom <= grid.height - grid.paddingBottom
+            if (attempt == 0 && fullyVisible && child?.requestFocus() == true) return true
+            if (attempt == 0) {
+                // This stable sibling stays focused while GridView detaches and
+                // reattaches poster views for the next row.
+                grid.descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
+                focusAnchor.isFocusableInTouchMode = true
+                if (!focusAnchor.requestFocus()) {
+                    grid.descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
+                    return false
+                }
+                grid.setSelectionFromTop(target / GRID_COLUMNS * GRID_COLUMNS, 0)
+            } else if (fullyVisible) {
+                grid.descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
+                if (child?.requestFocus() == true) return true
+                grid.descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
+                focusAnchor.requestFocus()
+            }
+            if (attempt < 20) {
+                grid.postDelayed({ requestMovieFocus(target, attempt + 1, activeRequest) }, 50)
+            } else {
+                grid.descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
+            }
+            return focusAnchor.hasFocus() || grid.hasFocus()
+        }
+        fun navigateMovie(position: Int, keyCode: Int, parentHasFocus: Boolean): Boolean {
+            val column = position % GRID_COLUMNS
+            val target = when (keyCode) {
+                KeyEvent.KEYCODE_DPAD_LEFT -> {
+                    if (column == 0) return parentHasFocus
+                    position - 1
+                }
+                KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                    if (position + 1 >= visibleMovieCount) return true
+                    position + 1
+                }
+                KeyEvent.KEYCODE_DPAD_UP -> {
+                    if (position < GRID_COLUMNS) return true
+                    position - GRID_COLUMNS
+                }
+                KeyEvent.KEYCODE_DPAD_DOWN -> {
+                    val next = position + GRID_COLUMNS
+                    if ((position / GRID_COLUMNS + 1) * GRID_COLUMNS >= visibleMovieCount) return true
+                    next.coerceAtMost(visibleMovieCount - 1)
+                }
+                else -> return false
+            }
+            requestMovieFocus(target)
+            return true
+        }
+        grid.setOnKeyListener { _, keyCode, event ->
+            if (event.action == KeyEvent.ACTION_DOWN) navigateMovie(focusedMoviePosition, keyCode, parentHasFocus = true)
+            else false
+        }
+        focusAnchor.setOnKeyListener { _, keyCode, event ->
+            if (event.action == KeyEvent.ACTION_DOWN) navigateMovie(focusedMoviePosition, keyCode, parentHasFocus = true)
+            else false
+        }
         fun populate(filter: String) {
-            grid.removeAllViews()
             val total = movies.count { it.title.contains(filter, ignoreCase = true) }
             val found = movies.asSequence()
                 .filter { it.title.contains(filter, ignoreCase = true) }
-                .take(MAX_CATALOG_ITEMS)
                 .toList()
+            visibleMovieCount = found.size
+            visibleMovies = found
+            focusedMoviePosition = 0
+            focusRequestGeneration++
+            grid.tag = CATALOG_LEFT_EDGE_TAG
+            focusAnchor.tag = CATALOG_LEFT_EDGE_TAG
             if (found.isEmpty()) {
                 activeMovieId = null
                 activeMovieDetails = null
@@ -215,8 +334,8 @@ class LunaHomeScreen(private val context: Context, private val actions: LunaHome
                 hero.fullName.text = ""
                 hero.fullName.visibility = View.GONE
                 hero.displayedArtworkUrl = null
-                LunaArtworkLoader.into(null, hero.backdrop, 1200)
-                grid.addView(stateLabel(if (movies.isEmpty()) "Esta categoria não tem filmes disponíveis." else "Nenhum título corresponde à busca."))
+                LeSilArtworkLoader.into(null, hero.backdrop, 1200)
+                grid.adapter = null
                 return
             }
             showMovie(found.first(), initialDetails?.takeIf { found.first().id == initialDetailsMovieId }, 1, total)
@@ -226,51 +345,46 @@ class LunaHomeScreen(private val context: Context, private val actions: LunaHome
                     renderMovieCatalogHero(hero, found.first(), details, 1, total)
                 }
             }
-            val gridTiles = mutableListOf<View>()
-            found.chunked(GRID_COLUMNS).forEachIndexed { rowIndex, rowItems ->
-                val row = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
-                rowItems.forEachIndexed { columnIndex, movie ->
-                    val position = rowIndex * GRID_COLUMNS + columnIndex + 1
-                    val tile = catalogTile(
+            grid.adapter = object : android.widget.BaseAdapter() {
+                override fun getCount(): Int = found.size
+                override fun getItem(position: Int): CatalogEntry = found[position]
+                override fun getItemId(position: Int): Long = getItem(position).id.toLong()
+                override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+                    val movie = getItem(position)
+                    val tile = (convertView as? LinearLayout) ?: catalogTile(
                         title = movie.title,
                         imageUrl = movie.posterUrl,
                         rating = movie.rating,
                         onClick = { onMovie(movie) },
-                        onFocus = { focused -> if (focused) focusMovie(movie, position, total) }
-                    ).apply {
-                        id = View.generateViewId()
-                        if (columnIndex == 0) tag = CATALOG_LEFT_EDGE_TAG
+                        onFocus = { focused -> if (focused) focusMovie(movie, position + 1, total) }
+                    ) as LinearLayout
+                    if (convertView != null) {
+                        bindCatalogTile(tile, movie, position + 1, total, onMovie, ::focusMovie)
                     }
-                    gridTiles += tile
-                    row.addView(tile, LinearLayout.LayoutParams(dp(CATALOG_POSTER_WIDTH_DP), dp(CATALOG_TILE_HEIGHT_DP)).apply {
-                        marginEnd = dp(CATALOG_POSTER_GAP_DP)
-                    })
+                    return tile.apply {
+                        id = View.generateViewId()
+                        // AbsListView requires its own LayoutParams subclass. A plain
+                        // ViewGroup.LayoutParams crashes GridView when it fills rows
+                        // during vertical scrolling (TCL: ClassCastException).
+                        layoutParams = AbsListView.LayoutParams(dp(CATALOG_POSTER_WIDTH_DP), dp(CATALOG_TILE_HEIGHT_DP))
+                        setOnKeyListener { _, keyCode, event ->
+                            if (event.action != KeyEvent.ACTION_DOWN) return@setOnKeyListener false
+                            navigateMovie(position, keyCode, parentHasFocus = false)
+                        }
+                        // GridView recycles each poster view. Clear the marker and
+                        // explicit category target on every bind, otherwise a view
+                        // reused from column 0 can send DPAD_LEFT to Categories.
+                        if (position % GRID_COLUMNS == 0) {
+                            tag = CATALOG_LEFT_EDGE_TAG
+                            nextFocusLeftId = categoryPanel.selected?.id ?: View.NO_ID
+                        } else {
+                            tag = null
+                            nextFocusLeftId = View.NO_ID
+                        }
+                    }
                 }
-                val horizontalRow = HorizontalScrollView(context).apply {
-                    isHorizontalScrollBarEnabled = false
-                    isFocusable = false
-                    isSmoothScrollingEnabled = true
-                    descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
-                    addView(row, FrameLayout.LayoutParams(-2, dp(CATALOG_TILE_HEIGHT_DP)))
-                }
-                grid.addView(horizontalRow, LinearLayout.LayoutParams(-1, dp(CATALOG_TILE_HEIGHT_DP)).apply {
-                    bottomMargin = dp(8)
-                })
             }
-            gridTiles.forEachIndexed { index, tile ->
-                val column = index % GRID_COLUMNS
-                if (column > 0) tile.nextFocusLeftId = gridTiles[index - 1].id
-                if (column < GRID_COLUMNS - 1 && index + 1 < gridTiles.size) {
-                    tile.nextFocusRightId = gridTiles[index + 1].id
-                }
-                if (index - GRID_COLUMNS >= 0) tile.nextFocusUpId = gridTiles[index - GRID_COLUMNS].id
-                if (index + GRID_COLUMNS < gridTiles.size) tile.nextFocusDownId = gridTiles[index + GRID_COLUMNS].id
-                if (column == 0) categoryPanel.selected?.let { tile.nextFocusLeftId = it.id }
-            }
-            categoryPanel.items.forEach { it.nextFocusRightId = gridTiles.firstOrNull()?.id ?: View.NO_ID }
-            if (total > MAX_CATALOG_ITEMS) {
-                grid.addView(stateLabel("Exibindo os primeiros $MAX_CATALOG_ITEMS títulos. Use a busca para filtrar."))
-            }
+            grid.invalidateViews()
         }
         searchButton.setOnClickListener {
             val input = EditText(context).apply {
@@ -291,12 +405,12 @@ class LunaHomeScreen(private val context: Context, private val actions: LunaHome
                 .setPositiveButton("Buscar") { _, _ ->
                     activeFilter = input.text.toString().trim()
                     populate(activeFilter)
-                    gridScroll.scrollTo(0, 0)
+                    grid.setSelection(0)
                 }
                 .setNeutralButton("Limpar") { _, _ ->
                     activeFilter = ""
                     populate("")
-                    gridScroll.scrollTo(0, 0)
+                    grid.setSelection(0)
                 }
                 .setNegativeButton("Cancelar", null)
                 .show()
@@ -304,7 +418,15 @@ class LunaHomeScreen(private val context: Context, private val actions: LunaHome
             input.requestFocus()
         }
         populate("")
-        return catalogShell(selectedNav, categoryPanel.view, categoryPanel.selected, content)
+        return catalogShell(
+            selectedNav, categoryPanel.view, categoryPanel.selected, content,
+            onCategoriesRight = {
+                deferMovieChildFocusUntil = SystemClock.uptimeMillis() + 210L
+                requestMovieFocus(focusedMoviePosition)
+            },
+            onContentLeftEdge = { focusedMoviePosition % GRID_COLUMNS == 0 },
+            onContentRefocus = { requestMovieFocus(focusedMoviePosition) }
+        )
     }
 
     fun seriesCatalog(
@@ -494,28 +616,51 @@ class LunaHomeScreen(private val context: Context, private val actions: LunaHome
         selectedNav: String,
         categoryPanel: View,
         selectedCategory: View?,
-        body: View
+        body: View,
+        onCategoriesRight: (() -> Boolean)? = null,
+        onContentLeftEdge: (() -> Boolean)? = null,
+        onContentRefocus: (() -> Boolean)? = null
     ): View {
-        var focusZone = "categories"
+        var focusZone = ""
+        var panelAnimator: ValueAnimator? = null
         var applyFocusZone: (String) -> Unit = {}
         var requestCategoryFocus: () -> Unit = {}
         var requestMenuFocus: () -> Unit = {}
+        var menuFocusRequested = false
         val root = object : FrameLayout(context) {
             override fun dispatchKeyEvent(event: KeyEvent): Boolean {
                 if (event.action == KeyEvent.ACTION_DOWN) {
+                    val focusedView = findFocus()
+                    if (focusZone == "categories" && event.keyCode in listOf(
+                            KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT,
+                            KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN
+                        ) && (focusedView == null || !isDescendant(categoryPanel, focusedView))) {
+                        // The panel may be visible before its newly measured item
+                        // can take focus. Do not treat a key from the old movie
+                        // card as a second LEFT into the main menu.
+                        requestCategoryFocus()
+                        return true
+                    }
                     when {
                         event.keyCode == KeyEvent.KEYCODE_DPAD_LEFT && focusZone == "content" &&
-                            findFocus()?.tag == CATALOG_LEFT_EDGE_TAG -> {
+                            (focusedView?.tag == CATALOG_LEFT_EDGE_TAG || onContentLeftEdge?.invoke() == true) -> {
                             requestCategoryFocus()
                             return true
                         }
                         event.keyCode == KeyEvent.KEYCODE_DPAD_LEFT && focusZone == "categories" -> {
-                            applyFocusZone("menu")
                             requestMenuFocus()
                             return true
                         }
                         event.keyCode == KeyEvent.KEYCODE_DPAD_RIGHT && focusZone == "menu" -> {
                             requestCategoryFocus()
+                            return true
+                        }
+                        event.keyCode == KeyEvent.KEYCODE_DPAD_RIGHT && focusZone == "categories" &&
+                            onCategoriesRight != null -> {
+                            // Transfer focus while the category item still exists.
+                            // Hiding it first lets Android choose the main menu as
+                            // a fallback before the movie grid can take focus.
+                            if (onCategoriesRight.invoke()) applyFocusZone("content")
                             return true
                         }
                     }
@@ -543,26 +688,82 @@ class LunaHomeScreen(private val context: Context, private val actions: LunaHome
         root.addView(columns, FrameLayout.LayoutParams(-1, -1))
 
         applyFocusZone = { zone ->
-            focusZone = zone
-            val menuExpanded = zone == "menu"
-            nav.setCompact(!menuExpanded)
-            navLayout.width = if (menuExpanded) sidebarWidth else dp(COLLAPSED_SIDEBAR_WIDTH_DP)
-            nav.view.layoutParams = navLayout
+            if (zone != focusZone) {
+                focusZone = zone
+                val menuExpanded = zone == "menu"
+                val targetNavWidth = if (menuExpanded) sidebarWidth else dp(COLLAPSED_SIDEBAR_WIDTH_DP)
+                val targetCategoryWidth = if (zone == "categories") categoryPaneWidth else 0
+                val startNavWidth = navLayout.width
+                val startCategoryWidth = categoryLayout.width
+                panelAnimator?.cancel()
+                nav.setCompact(!menuExpanded)
+                if (targetCategoryWidth > 0) categoryPanel.visibility = View.VISIBLE
 
-            val categoriesExpanded = zone == "categories"
-            categoryPanel.visibility = if (categoriesExpanded) View.VISIBLE else View.GONE
-            categoryLayout.width = if (categoriesExpanded) categoryPaneWidth else 0
-            categoryPanel.layoutParams = categoryLayout
-            sidePanels.requestLayout()
+                fun setPanelWidths(navWidth: Int, categoryWidth: Int) {
+                    navLayout.width = navWidth
+                    categoryLayout.width = categoryWidth
+                    sidePanels.requestLayout()
+                }
+
+                if (root.isAttachedToWindow &&
+                    (startNavWidth != targetNavWidth || startCategoryWidth != targetCategoryWidth)) {
+                    val animator = ValueAnimator.ofFloat(0f, 1f).apply {
+                        duration = 190L
+                        interpolator = DecelerateInterpolator()
+                        addUpdateListener { frame ->
+                            val progress = frame.animatedValue as Float
+                            setPanelWidths(
+                                startNavWidth + ((targetNavWidth - startNavWidth) * progress).toInt(),
+                                startCategoryWidth + ((targetCategoryWidth - startCategoryWidth) * progress).toInt()
+                            )
+                        }
+                        addListener(object : AnimatorListenerAdapter() {
+                            override fun onAnimationEnd(animation: Animator) {
+                                if (panelAnimator !== animation) return
+                                setPanelWidths(targetNavWidth, targetCategoryWidth)
+                                if (targetCategoryWidth == 0) categoryPanel.visibility = View.GONE
+                                panelAnimator = null
+                            }
+                        })
+                    }
+                    panelAnimator = animator
+                    animator.start()
+                } else {
+                    setPanelWidths(targetNavWidth, targetCategoryWidth)
+                    if (targetCategoryWidth == 0) categoryPanel.visibility = View.GONE
+                    panelAnimator = null
+                }
+            }
+        }
+        fun focusSelectedCategory(attempt: Int = 0) {
+            val item = selectedCategory ?: return
+            if (focusZone != "categories" || item.requestFocus()) return
+            if (attempt < 8) root.postDelayed({ focusSelectedCategory(attempt + 1) }, 40)
         }
         requestCategoryFocus = {
             applyFocusZone("categories")
-            root.post { selectedCategory?.requestFocus() }
+            focusSelectedCategory()
         }
-        requestMenuFocus = { root.post { nav.selectedItem?.requestFocus() } }
+        requestMenuFocus = {
+            // The compact menu item is focusable before its column expands.
+            // Focus it first so collapsing Categories cannot orphan focus.
+            menuFocusRequested = true
+            if (nav.selectedItem?.requestFocus() == true) applyFocusZone("menu")
+            menuFocusRequested = false
+        }
         val focusListener = android.view.ViewTreeObserver.OnGlobalFocusChangeListener { _, newFocus ->
             when {
                 newFocus == null -> Unit
+                isDescendant(nav.view, newFocus) && onContentRefocus != null && !menuFocusRequested -> {
+                    // During poster recycling or category expansion Android may
+                    // choose the sidebar as fallback. Keep the intended panel.
+                    when (focusZone) {
+                        "content" -> if (!onContentRefocus.invoke()) root.post {
+                            if (focusZone == "content") onContentRefocus.invoke()
+                        }
+                        "categories" -> requestCategoryFocus()
+                    }
+                }
                 isDescendant(nav.view, newFocus) && focusZone != "menu" -> applyFocusZone("menu")
                 isDescendant(categoryPanel, newFocus) && focusZone != "categories" -> applyFocusZone("categories")
                 isDescendant(body, newFocus) && focusZone != "content" -> applyFocusZone("content")
@@ -572,6 +773,7 @@ class LunaHomeScreen(private val context: Context, private val actions: LunaHome
         root.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
             override fun onViewAttachedToWindow(view: View) = Unit
             override fun onViewDetachedFromWindow(view: View) {
+                panelAnimator?.cancel()
                 if (root.viewTreeObserver.isAlive) root.viewTreeObserver.removeOnGlobalFocusChangeListener(focusListener)
             }
         })
@@ -721,7 +923,7 @@ class LunaHomeScreen(private val context: Context, private val actions: LunaHome
             ?: movie.posterUrl?.takeIf { it.isNotBlank() }
         if (artworkUrl != binding.displayedArtworkUrl) {
             binding.displayedArtworkUrl = artworkUrl
-            LunaArtworkLoader.into(artworkUrl, binding.backdrop, 1100)
+            LeSilArtworkLoader.into(artworkUrl, binding.backdrop, 1100)
         }
     }
 
@@ -828,7 +1030,7 @@ class LunaHomeScreen(private val context: Context, private val actions: LunaHome
         val update: (SeriesEntry) -> Unit = { item ->
             heading.text = item.title
             metadata.text = listOfNotNull(item.rating?.takeIf { it.isNotBlank() && it != "0" }?.let { "★ $it" }).joinToString("   ·   ")
-            LunaArtworkLoader.into(item.coverUrl, cover, 1100)
+            LeSilArtworkLoader.into(item.coverUrl, cover, 1100)
         }
         initial?.let(update)
         return root to update
@@ -860,26 +1062,40 @@ class LunaHomeScreen(private val context: Context, private val actions: LunaHome
     ): SidebarBinding {
         val nav = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(14), dp(20), dp(12), dp(14))
+            setPadding(dp(if (shortScreen) 10 else 14), dp(if (shortScreen) 10 else 20),
+                dp(if (shortScreen) 8 else 12), dp(if (shortScreen) 8 else 14))
             background = GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, intArrayOf(0xFF07111D.toInt(), 0xFF030810.toInt()))
         }
         val brand = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(10), dp(6), dp(4), dp(24))
+            setPadding(dp(if (shortScreen) 6 else 10), dp(if (shortScreen) 2 else 6), dp(4), dp(if (shortScreen) 10 else 24))
         }
-        val logo = TextView(context).apply {
-            text = "☾ LunaStream"
-            textSize = 25f
+        val logo = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val mark = ImageView(context).apply {
+            setImageResource(R.drawable.lesil_icon)
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            contentDescription = "Le&Sil Stream"
+        }
+        logo.addView(mark, LinearLayout.LayoutParams(dp(24), dp(24)).apply {
+            marginEnd = dp(6)
+        })
+        val wordmark = TextView(context).apply {
+            text = "Le&Sil Stream"
+            textSize = if (shortScreen) 16f else 18f
             typeface = Typeface.create("sans-serif", Typeface.NORMAL)
             setTextColor(WHITE)
             maxLines = 1
         }
+        logo.addView(wordmark)
         val tagline = TextView(context).apply {
             text = "FILMES E SÉRIES"
-            textSize = 9f
+            textSize = if (shortScreen) 7f else 9f
             letterSpacing = 0.22f
             setTextColor(CYAN)
-            setPadding(dp(38), dp(2), 0, 0)
+            setPadding(dp(36), dp(2), 0, 0)
         }
         brand.addView(logo)
         brand.addView(tagline)
@@ -893,8 +1109,11 @@ class LunaHomeScreen(private val context: Context, private val actions: LunaHome
         var activeView: View? = null
         menu.forEach { (name, icon) ->
             val item = TextView(context).apply {
-                text = "$icon    $name"
-                textSize = 17f
+                text = "$icon  $name"
+                textSize = if (shortScreen) 13f else 15f
+                includeFontPadding = false
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
                 setTextColor(if (name == selectedNav) 0xFF0644AE.toInt() else WHITE)
                 gravity = Gravity.CENTER_VERTICAL
                 setPadding(dp(14), 0, dp(8), 0)
@@ -912,10 +1131,10 @@ class LunaHomeScreen(private val context: Context, private val actions: LunaHome
                 }
                 setOnClickListener { actions.onNavigate(name) }
             }
-            nav.addView(item, LinearLayout.LayoutParams(-1, dp(50)).apply {
+            nav.addView(item, LinearLayout.LayoutParams(-1, dp(if (shortScreen) 40 else 46)).apply {
                 marginStart = dp(4)
                 marginEnd = dp(4)
-                bottomMargin = dp(3)
+                bottomMargin = dp(if (shortScreen) 2 else 3)
             })
             menuItems += Triple(item, name, icon)
             if (name == selectedNav) activeView = item
@@ -923,21 +1142,24 @@ class LunaHomeScreen(private val context: Context, private val actions: LunaHome
         nav.addView(View(context), LinearLayout.LayoutParams(1, 0, 1f))
         val foot = TextView(context).apply {
             text = "VOD • EXPERIÊNCIA DE CINEMA"
-            textSize = 9f
+            textSize = if (shortScreen) 7f else 9f
             letterSpacing = 0.08f
             setTextColor(SECONDARY)
             gravity = Gravity.CENTER
             setPadding(0, dp(8), 0, dp(8))
         }
-        nav.addView(foot)
+        if (!shortScreen) nav.addView(foot)
         fun setCompact(compact: Boolean) {
-            nav.setPadding(if (compact) dp(5) else dp(14), dp(20), if (compact) dp(5) else dp(12), dp(14))
-            brand.setPadding(if (compact) dp(4) else dp(10), dp(6), dp(4), if (compact) dp(8) else dp(24))
-            logo.text = if (compact) "☾" else "☾ LunaStream"
+            nav.setPadding(if (compact) dp(5) else dp(if (shortScreen) 10 else 14),
+                dp(if (shortScreen) 10 else 20), if (compact) dp(5) else dp(if (shortScreen) 8 else 12),
+                dp(if (shortScreen) 8 else 14))
+            brand.setPadding(if (compact) dp(4) else dp(if (shortScreen) 6 else 10),
+                dp(if (shortScreen) 2 else 6), dp(4), dp(if (compact) 8 else if (shortScreen) 10 else 24))
             logo.gravity = if (compact) Gravity.CENTER else Gravity.START or Gravity.CENTER_VERTICAL
+            wordmark.visibility = if (compact) View.GONE else View.VISIBLE
             tagline.visibility = if (compact) View.GONE else View.VISIBLE
             menuItems.forEach { (item, name, icon) ->
-                item.text = if (compact) icon else "$icon    $name"
+                item.text = if (compact) icon else "$icon  $name"
                 item.gravity = if (compact) Gravity.CENTER else Gravity.CENTER_VERTICAL
                 item.setPadding(if (compact) dp(2) else dp(14), 0, if (compact) dp(2) else dp(8), 0)
                 item.maxLines = 1
@@ -949,7 +1171,7 @@ class LunaHomeScreen(private val context: Context, private val actions: LunaHome
         return SidebarBinding(nav, ::setCompact, activeView)
     }
 
-    private fun hero(data: LunaHomeData): View {
+    private fun hero(data: LeSilHomeData): View {
         val movie = data.featuredMovie
         val details = data.featuredDetails
         val frame = FrameLayout(context).apply {
@@ -958,7 +1180,7 @@ class LunaHomeScreen(private val context: Context, private val actions: LunaHome
         }
         val height = dp((context.resources.configuration.screenHeightDp * 0.39f).toInt().coerceIn(300, 390))
         val artwork = ImageView(context).apply { scaleType = ImageView.ScaleType.CENTER_CROP }
-        LunaArtworkLoader.into(details?.backdropUrl ?: details?.posterUrl ?: movie?.posterUrl, artwork, 1500)
+        LeSilArtworkLoader.into(details?.backdropUrl ?: details?.posterUrl ?: movie?.posterUrl, artwork, 1500)
         frame.addView(artwork, FrameLayout.LayoutParams(-1, -1))
 
         val leftShade = View(context).apply {
@@ -979,7 +1201,7 @@ class LunaHomeScreen(private val context: Context, private val actions: LunaHome
         }
         val kicker = TextView(context).apply {
             text = when {
-                data.loading -> "LUNASTREAM"
+                data.loading -> "LE&SIL STREAM"
                 movie?.addedAt != null -> "ADICIONADO RECENTEMENTE"
                 movie != null -> "DESTAQUE DO CATÁLOGO"
                 else -> "SUA BIBLIOTECA VOD"
@@ -989,7 +1211,7 @@ class LunaHomeScreen(private val context: Context, private val actions: LunaHome
             setTextColor(0xFFBFD8EA.toInt())
         }
         val title = TextView(context).apply {
-            text = details?.title?.takeIf { it.isNotBlank() } ?: movie?.title ?: "LunaStream"
+            text = details?.title?.takeIf { it.isNotBlank() } ?: movie?.title ?: "Le&Sil Stream"
             textSize = 39f
             maxLines = 2
             setTextColor(WHITE)
@@ -1100,7 +1322,7 @@ class LunaHomeScreen(private val context: Context, private val actions: LunaHome
             }
         }
         val image = ImageView(context).apply { scaleType = ImageView.ScaleType.CENTER_CROP }
-        LunaArtworkLoader.into(imageUrl, image, 720)
+        LeSilArtworkLoader.into(imageUrl, image, 720)
         card.addView(image, FrameLayout.LayoutParams(-1, -1))
         val shade = View(context).apply {
             background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
@@ -1165,7 +1387,7 @@ class LunaHomeScreen(private val context: Context, private val actions: LunaHome
             background = rounded(0xFF0D1A27.toInt(), 0xFF263A4E.toInt(), 8)
             clipToOutline = true
         }
-        LunaArtworkLoader.into(imageUrl, poster, 420)
+        LeSilArtworkLoader.into(imageUrl, poster, 420)
         tile.addView(poster, LinearLayout.LayoutParams(-1, dp(CATALOG_POSTER_HEIGHT_DP)))
         val caption = TextView(context).apply {
             text = title
@@ -1180,6 +1402,34 @@ class LunaHomeScreen(private val context: Context, private val actions: LunaHome
             caption.contentDescription = "$title, nota informada pelo servidor $rating"
         }
         return tile
+    }
+
+    private fun bindCatalogTile(
+        tile: LinearLayout,
+        movie: CatalogEntry,
+        position: Int,
+        total: Int,
+        onMovie: (CatalogEntry) -> Unit,
+        onFocus: (CatalogEntry, Int, Int) -> Unit
+    ) {
+        val poster = tile.getChildAt(0) as? ImageView ?: return
+        val caption = tile.getChildAt(1) as? TextView ?: return
+        LeSilArtworkLoader.into(movie.posterUrl, poster, 420)
+        caption.text = movie.title
+        caption.contentDescription = if (!movie.rating.isNullOrBlank() && movie.rating != "0") {
+            "${movie.title}, nota informada pelo servidor ${movie.rating}"
+        } else movie.title
+        tile.contentDescription = "Abrir ${movie.title}"
+        tile.setOnClickListener { onMovie(movie) }
+        tile.setOnFocusChangeListener { view, focused ->
+            view.background = rounded(
+                if (focused) 0xFF10263A.toInt() else Color.TRANSPARENT,
+                if (focused) CYAN else Color.TRANSPARENT, 10
+            )
+            view.animate().scaleX(if (focused) 1.025f else 1f).scaleY(if (focused) 1.025f else 1f)
+                .setDuration(150).start()
+            if (focused) onFocus(movie, position, total)
+        }
     }
 
     private fun verticalScroll(): LinearLayout = LinearLayout(context).apply {
@@ -1297,7 +1547,7 @@ class LunaHomeScreen(private val context: Context, private val actions: LunaHome
         const val CATALOG_CAPTION_HEIGHT_DP = 26
         const val CATALOG_TILE_HEIGHT_DP = 200
         const val CATALOG_POSTER_GAP_DP = 8
-        const val CATALOG_LEFT_EDGE_TAG = "lunastream.catalog.leftEdge"
+        const val CATALOG_LEFT_EDGE_TAG = "lesil.catalog.leftEdge"
         const val COLLAPSED_SIDEBAR_WIDTH_DP = 68
     }
 }

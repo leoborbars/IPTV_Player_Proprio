@@ -1,4 +1,4 @@
-# Integração Xtream Codes — LunaStream
+# Integração Xtream Codes — Le&Sil Stream
 
 ## Endpoints usados na Home
 

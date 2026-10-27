@@ -107,8 +107,8 @@ class MainActivity : Activity() {
         }
     }
 
-    private val lunaUi by lazy {
-        LunaHomeScreen(this, LunaHomeActions(
+    private val leSilUi by lazy {
+        LeSilHomeScreen(this, LeSilHomeActions(
             onNavigate = ::navigate,
             onRetry = ::retryCatalog,
             onPlay = { movie -> playMovie(movie) { showHome() } },
@@ -240,7 +240,7 @@ class MainActivity : Activity() {
         backAction = { showHome() }
         val saved = credentialStore.load()
         val screen = column()
-        screen.addView(label("LunaStream", 30f))
+        screen.addView(label("Le&Sil Stream", 30f))
         screen.addView(label("Filmes e séries VOD", 17f))
         val server = EditText(this).apply { hint = "https://servidor:porta"; setSingleLine(); textSize = 22f; setTextColor(Color.WHITE); setHintTextColor(Color.LTGRAY); backgroundTintList = ColorStateList.valueOf(Color.LTGRAY); setText(saved?.server.orEmpty()) }
         val user = EditText(this).apply { hint = "Usuário"; setSingleLine(); textSize = 22f; setTextColor(Color.WHITE); setHintTextColor(Color.LTGRAY); backgroundTintList = ColorStateList.valueOf(Color.LTGRAY); setText(saved?.username.orEmpty()) }
@@ -264,7 +264,7 @@ class MainActivity : Activity() {
         })
         val status = label("Os dados só são guardados se você marcar a opção acima.", 15f)
         screen.addView(status)
-        screen.addView(button("Entrar no LunaStream") {
+        screen.addView(button("Entrar no Le&Sil Stream") {
             val url = server.text.toString().trim()
             if (url.startsWith("http://")) msg("Aviso: HTTP sem criptografia transmite credenciais pela rede")
             val credentials = SavedCredentials(url, user.text.toString().trim(), pass.text.toString())
@@ -373,7 +373,7 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun homeData() = LunaHomeData(
+    private fun homeData() = LeSilHomeData(
         movieCategories = movieCategories,
         featuredMovie = featuredMovie,
         featuredDetails = featuredDetails,
@@ -390,7 +390,7 @@ class MainActivity : Activity() {
 
     private fun showHome() {
         backAction = null
-        replace(lunaUi.home(homeData()), isHome = true)
+        replace(leSilUi.home(homeData()), isHome = true)
     }
 
     private fun navigate(destination: String) {
@@ -402,7 +402,7 @@ class MainActivity : Activity() {
                 val category = fourKCategory
                 if (category == null) {
                     backAction = { showHome() }
-                    replace(lunaUi.messageScreen("Filmes 4K", "Filmes 4K", "O catálogo não informou uma categoria chamada Filmes 4K ou Filmes UHD.", "Voltar ao início") { showHome() })
+                    replace(leSilUi.messageScreen("Filmes 4K", "Filmes 4K", "O catálogo não informou uma categoria chamada Filmes 4K ou Filmes UHD.", "Voltar ao início") { showHome() })
                 } else {
                     selectMovieCategory(category, "Filmes 4K")
                 }
@@ -412,7 +412,7 @@ class MainActivity : Activity() {
             }
             "Favoritos" -> {
                 backAction = { showHome() }
-                replace(lunaUi.messageScreen("Favoritos", "Favoritos", "Ainda não há favoritos salvos neste dispositivo.", "Voltar ao início") { showHome() })
+                replace(leSilUi.messageScreen("Favoritos", "Favoritos", "Ainda não há favoritos salvos neste dispositivo.", "Voltar ao início") { showHome() })
             }
             "Configurações" -> {
                 showSettings()
@@ -435,7 +435,7 @@ class MainActivity : Activity() {
         val entries = continueEntries()
         if (entries.isEmpty()) {
             backAction = { showHome() }
-            replace(lunaUi.messageScreen(
+            replace(leSilUi.messageScreen(
                 "Continuar", "Continuar assistindo",
                 "Os filmes que você começar aparecerão aqui. O progresso fica salvo neste aparelho e pode sincronizar pelo NAS.",
                 "Voltar ao início"
@@ -444,7 +444,7 @@ class MainActivity : Activity() {
         }
         backAction = { showHome() }
         val category = CatalogEntry(CONTINUE_CATEGORY_ID, "Continuar assistindo")
-        replace(lunaUi.movieCatalog(
+        replace(leSilUi.movieCatalog(
             title = "Continuar assistindo · ${entries.size} títulos",
             selectedNav = "Continuar",
             categories = listOf(category),
@@ -566,7 +566,7 @@ class MainActivity : Activity() {
     private fun syncProgressProfile(profileId: String, legacyProfileId: String) {
         val profileTag = profileId.take(8)
         val settings = progressSettingsStore.load() ?: run {
-            android.util.Log.w("LunaProgressSync", "No NAS settings for profile=$profileTag")
+            android.util.Log.w("LeSilProgressSync", "No NAS settings for profile=$profileTag")
             return
         }
         runCatching {
@@ -586,25 +586,25 @@ class MainActivity : Activity() {
             lastProgressSyncAt = System.currentTimeMillis()
             remote.size to progressStore.all(profileId).size
         }.onSuccess { (remoteCount, localCount) ->
-            android.util.Log.i("LunaProgressSync", "profile=$profileTag fetched=$remoteCount local=$localCount")
+            android.util.Log.i("LeSilProgressSync", "profile=$profileTag fetched=$remoteCount local=$localCount")
         }.onFailure { error ->
-            android.util.Log.e("LunaProgressSync", "profile=$profileTag fetch failed: ${error.javaClass.simpleName}: ${error.message}")
+            android.util.Log.e("LeSilProgressSync", "profile=$profileTag fetch failed: ${error.javaClass.simpleName}: ${error.message}")
         }
     }
 
     private fun syncProgressItem(profileId: String, item: WatchProgress) {
         val profileTag = profileId.take(8)
         val settings = progressSettingsStore.load() ?: run {
-            android.util.Log.w("LunaProgressSync", "No NAS settings for upload profile=$profileTag")
+            android.util.Log.w("LeSilProgressSync", "No NAS settings for upload profile=$profileTag")
             return
         }
         runCatching { ProgressSyncClient(settings).upsert(profileId, item) }
             .onSuccess {
                 lastProgressSyncAt = System.currentTimeMillis()
-                android.util.Log.i("LunaProgressSync", "profile=$profileTag upload succeeded")
+                android.util.Log.i("LeSilProgressSync", "profile=$profileTag upload succeeded")
             }
             .onFailure { error ->
-                android.util.Log.e("LunaProgressSync", "profile=$profileTag upload failed: ${error.javaClass.simpleName}: ${error.message}")
+                android.util.Log.e("LeSilProgressSync", "profile=$profileTag upload failed: ${error.javaClass.simpleName}: ${error.message}")
             }
     }
 
@@ -637,7 +637,7 @@ class MainActivity : Activity() {
             return
         }
         backAction = { if (nav == "Filmes 4K") showHome() else showMovieCategories() }
-        replace(lunaUi.messageScreen(nav, category.title, "Carregando filmes do catálogo…", "Voltar") {
+        replace(leSilUi.messageScreen(nav, category.title, "Carregando filmes do catálogo…", "Voltar") {
             if (nav == "Filmes 4K") showHome() else showMovieCategories()
         })
         val c = client ?: return
@@ -650,7 +650,7 @@ class MainActivity : Activity() {
         }, {
             runOnUiThread {
                 backAction = { if (nav == "Filmes 4K") showHome() else showMovieCategories() }
-                replace(lunaUi.messageScreen(nav, category.title, "Não foi possível carregar esta categoria. Tente novamente.", "Voltar") {
+                replace(leSilUi.messageScreen(nav, category.title, "Não foi possível carregar esta categoria. Tente novamente.", "Voltar") {
                     if (nav == "Filmes 4K") showHome() else showMovieCategories()
                 })
             }
@@ -659,7 +659,7 @@ class MainActivity : Activity() {
 
     private fun showMovies() {
         backAction = { if (currentMovieNav == "Filmes 4K") showHome() else showMovieCategories() }
-        replace(lunaUi.movieCatalog(
+        replace(leSilUi.movieCatalog(
             title = categoryName,
             selectedNav = currentMovieNav,
             categories = if (currentMovieNav == "Filmes 4K") listOfNotNull(fourKCategory)
@@ -687,7 +687,7 @@ class MainActivity : Activity() {
             return
         }
         backAction = { showSeriesCategories() }
-        replace(lunaUi.messageScreen("Séries", category.title, "Carregando séries do catálogo…", "Voltar às categorias") { showSeriesCategories() })
+        replace(leSilUi.messageScreen("Séries", category.title, "Carregando séries do catálogo…", "Voltar às categorias") { showSeriesCategories() })
         val c = client ?: return
         runNetwork({
             val result = c.series(category.id)
@@ -695,7 +695,7 @@ class MainActivity : Activity() {
         }, {
             runOnUiThread {
                 backAction = { showSeriesCategories() }
-                replace(lunaUi.messageScreen("Séries", category.title, "Não foi possível carregar esta categoria.", "Voltar às categorias") { showSeriesCategories() })
+                replace(leSilUi.messageScreen("Séries", category.title, "Não foi possível carregar esta categoria.", "Voltar às categorias") { showSeriesCategories() })
             }
         })
     }
@@ -704,7 +704,7 @@ class MainActivity : Activity() {
         val title = category?.let { "${it.title}  ·  ${items.size} séries" }
             ?: "Todas as séries  ·  ${items.size} séries"
         backAction = { showSeriesCategories() }
-        replace(lunaUi.seriesCatalog(
+        replace(leSilUi.seriesCatalog(
             title = title,
             selectedNav = "Séries",
             categories = listOf(allSeriesCategory) + seriesCategories,
