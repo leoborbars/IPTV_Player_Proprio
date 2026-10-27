@@ -806,13 +806,13 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
                 intArrayOf(0x00000000, 0x44031B48.toInt(), 0xDD031126.toInt()))
         }, FrameLayout.LayoutParams(-1, -1))
         val title = TextView(context).apply {
-            textSize = 28f
+            textSize = 26f
             maxLines = 2
             ellipsize = android.text.TextUtils.TruncateAt.END
             typeface = Typeface.create("sans-serif", Typeface.BOLD)
             setTextColor(WHITE)
         }
-        val metadata = TextView(context).apply { textSize = 15f; setTextColor(0xFFE3F0FF.toInt()); maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END }
+        val metadata = TextView(context).apply { textSize = 14f; setTextColor(0xFFE3F0FF.toInt()); maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END }
         val formatLogos = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -824,16 +824,16 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
             addView(metadata, LinearLayout.LayoutParams(-2, -2))
             addView(formatLogos, LinearLayout.LayoutParams(-2, dp(22)).apply { marginStart = dp(10) })
         }
-        val cast = TextView(context).apply { textSize = 14f; setTextColor(0xFFE3F0FF.toInt()); maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END }
-        val director = TextView(context).apply { textSize = 14f; setTextColor(0xFFE3F0FF.toInt()); maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END }
+        val cast = TextView(context).apply { textSize = 13f; setTextColor(0xFFE3F0FF.toInt()); maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END }
+        val director = TextView(context).apply { textSize = 13f; setTextColor(0xFFE3F0FF.toInt()); maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END }
         val plot = TextView(context).apply {
-            textSize = 14f
+            textSize = 13f
             setTextColor(0xFFF0F5FB.toInt())
             maxLines = 2
             ellipsize = android.text.TextUtils.TruncateAt.END
         }
         val fullName = TextView(context).apply {
-            textSize = 13f
+            textSize = 12f
             setTextColor(0xFFD7E7F7.toInt())
         }
         val block = LinearLayout(context).apply {
@@ -841,17 +841,17 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
             gravity = Gravity.TOP
             setPadding(
                 dp(20),
-                dp(54),
+                dp(42),
                 dp((screenWidthDp * 0.32f).toInt()),
                 dp(10)
             )
         }
-        block.addView(title, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(5) })
-        block.addView(metadataLine, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(3) })
-        block.addView(cast, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(2) })
-        block.addView(director, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(3) })
+        block.addView(title, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(4) })
+        block.addView(metadataLine, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(2) })
+        block.addView(cast, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(1) })
+        block.addView(director, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(2) })
         block.addView(plot, LinearLayout.LayoutParams(-1, -2))
-        block.addView(fullName, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(3) })
+        block.addView(fullName, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(2) })
         root.addView(block, FrameLayout.LayoutParams(-1, -2, Gravity.TOP or Gravity.START))
         val position = TextView(context).apply {
             textSize = 15f
