@@ -204,15 +204,29 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
         var visibleMovieCount = movies.size
         var visibleMovies = movies
         var focusRequestGeneration = 0
+        var posterRefreshGeneration = 0
         var deferMovieChildFocusUntil = 0L
         fun showMovie(movie: CatalogEntry, details: MovieDetails?, position: Int, total: Int) {
             activeMovieId = movie.id
             activeMovieDetails = details
             renderMovieCatalogHero(hero, movie, details, position, total)
         }
+        fun refreshVisiblePosters() {
+            val first = grid.firstVisiblePosition
+            for (index in 0 until grid.childCount) {
+                val movie = visibleMovies.getOrNull(first + index) ?: continue
+                val poster = (grid.getChildAt(index) as? ViewGroup)?.getChildAt(0) as? ImageView ?: continue
+                if (poster.drawable == null && !movie.posterUrl.isNullOrBlank()) {
+                    LeSilArtworkLoader.into(movie.posterUrl, poster, 420)
+                }
+            }
+        }
         fun focusMovie(movie: CatalogEntry, position: Int, total: Int) {
             focusRequestGeneration++
             focusedMoviePosition = position - 1
+            val refreshRequest = ++posterRefreshGeneration
+            grid.postDelayed({ if (refreshRequest == posterRefreshGeneration) refreshVisiblePosters() }, 700)
+            grid.postDelayed({ if (refreshRequest == posterRefreshGeneration) refreshVisiblePosters() }, 2500)
             if (activeMovieId != movie.id) showMovie(movie, null, position, total)
             else renderMovieCatalogHero(hero, movie, activeMovieDetails, position, total)
             onMovieFocus(movie) { details ->
@@ -548,8 +562,7 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
         val panel = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(12), dp(14), dp(10), dp(10))
-            background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
-                intArrayOf(0xD9082E91.toInt(), 0xD906287F.toInt()))
+            background = sidebarSurface()
         }
         panel.addView(TextView(context).apply {
             text = heading
@@ -576,12 +589,9 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
                 isClickable = true
                 id = View.generateViewId()
                 contentDescription = category.title
-                background = rounded(if (selected) 0xFFF4F8FF.toInt() else 0x442A7DDF.toInt(),
-                    if (selected) 0xFFB9DCFF.toInt() else 0x6639A7FF.toInt(), 11)
+                background = navBackground(selected, false)
                 setOnFocusChangeListener { view, focused ->
-                    view.background = rounded(
-                        when { focused -> 0xFF39A0F4.toInt(); selected -> 0xFFF4F8FF.toInt(); else -> 0x442A7DDF.toInt() },
-                        if (focused || selected) 0xFFE4F3FF.toInt() else 0x6639A7FF.toInt(), 11)
+                    view.background = navBackground(selected, focused)
                     (view as TextView).setTextColor(if (selected && !focused) 0xFF0644AE.toInt() else WHITE)
                     // Keep the selection inside its column; scale only vertically for focus feedback.
                     view.animate().scaleX(1f).scaleY(if (focused) 1.025f else 1f)
@@ -1064,7 +1074,7 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
             orientation = LinearLayout.VERTICAL
             setPadding(dp(if (shortScreen) 10 else 14), dp(if (shortScreen) 10 else 20),
                 dp(if (shortScreen) 8 else 12), dp(if (shortScreen) 8 else 14))
-            background = GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, intArrayOf(0xFF07111D.toInt(), 0xFF030810.toInt()))
+            background = sidebarSurface()
         }
         val brand = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
@@ -1377,6 +1387,7 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
                     if (focused) CYAN else Color.TRANSPARENT, 10)
                 view.animate().scaleX(if (focused) 1.025f else 1f).scaleY(if (focused) 1.025f else 1f)
                     .setDuration(150).start()
+                if (focused) refreshFocusedPoster(view, imageUrl)
                 onFocus(focused)
             }
             setOnClickListener { onClick() }
@@ -1428,7 +1439,17 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
             )
             view.animate().scaleX(if (focused) 1.025f else 1f).scaleY(if (focused) 1.025f else 1f)
                 .setDuration(150).start()
-            if (focused) onFocus(movie, position, total)
+            if (focused) {
+                refreshFocusedPoster(view, movie.posterUrl)
+                onFocus(movie, position, total)
+            }
+        }
+    }
+
+    private fun refreshFocusedPoster(tile: View, imageUrl: String?) {
+        val poster = (tile as? ViewGroup)?.getChildAt(0) as? ImageView ?: return
+        if (poster.drawable == null && !imageUrl.isNullOrBlank()) {
+            LeSilArtworkLoader.into(imageUrl, poster, 420)
         }
     }
 
@@ -1510,6 +1531,11 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
         }
         return button
     }
+
+    private fun sidebarSurface(): GradientDrawable = GradientDrawable(
+        GradientDrawable.Orientation.LEFT_RIGHT,
+        intArrayOf(0xFF07111D.toInt(), 0xFF030810.toInt())
+    )
 
     private fun navBackground(selected: Boolean, focused: Boolean): GradientDrawable {
         val fill = when {

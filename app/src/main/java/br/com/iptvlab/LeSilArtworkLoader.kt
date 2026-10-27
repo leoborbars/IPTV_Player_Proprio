@@ -15,7 +15,7 @@ import java.util.concurrent.TimeUnit
 /** Loads only provider artwork and keeps a small in-memory cache for TV catalog rows. */
 object LeSilArtworkLoader {
     private const val MAX_DOWNLOAD_BYTES = 8 * 1024 * 1024
-    private val queue = LinkedBlockingDeque<Runnable>(48)
+    private val queue = LinkedBlockingDeque<Runnable>(256)
     private val executor = ThreadPoolExecutor(3, 3, 0L, TimeUnit.MILLISECONDS, queue).apply {
         prestartAllCoreThreads()
     }
