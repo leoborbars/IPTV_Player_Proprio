@@ -10,7 +10,10 @@ import android.graphics.PorterDuff
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.SystemClock
+import android.text.SpannableStringBuilder
 import android.text.InputType
+import android.text.style.ForegroundColorSpan
+import android.text.style.RelativeSizeSpan
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
@@ -25,6 +28,26 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+
+enum class MovieSortOrder(val label: String, val formatPattern: Regex? = null) {
+    TITLE_ASC("Título: A–Z"),
+    TITLE_DESC("Título: Z–A"),
+    NEWEST("Mais recentes"),
+    OLDEST("Mais antigos"),
+    HDR_FIRST("HDR primeiro", Regex("""\b(?:HDR(?:10(?:\+|PLUS)?)?|HLG|DOLBY[\s_-]*VISION|DV|DVHE|DVH1|DOVI)(?=$|[^A-Z0-9])""", RegexOption.IGNORE_CASE)),
+    HDR10_PLUS_FIRST("HDR10+ primeiro", Regex("""\bHDR[\s_-]*10(?:\+|PLUS)""", RegexOption.IGNORE_CASE)),
+    DOLBY_VISION_FIRST("Dolby Vision primeiro", Regex("""\b(?:DOLBY[\s_-]*VISION|DV|DVHE|DVH1|DOVI)\b""", RegexOption.IGNORE_CASE)),
+    HEVC_FIRST("HEVC / H.265 primeiro", Regex("""\b(?:HEVC|H[.\s_-]?265|X265)\b""", RegexOption.IGNORE_CASE)),
+    AV1_FIRST("AV1 primeiro", Regex("""\bAV1\b""", RegexOption.IGNORE_CASE)),
+    H264_FIRST("H.264 / AVC primeiro", Regex("""\b(?:H[.\s_-]?264|X264|AVC)\b""", RegexOption.IGNORE_CASE)),
+    VP9_FIRST("VP9 primeiro", Regex("""\bVP9\b""", RegexOption.IGNORE_CASE)),
+    ATMOS_FIRST("Dolby Atmos primeiro", Regex("""\b(?:DOLBY[\s_-]*ATMOS|ATMOS)\b""", RegexOption.IGNORE_CASE)),
+    DTS_FIRST("DTS primeiro", Regex("""\bDTS(?:[\s_-]*(?:HD|X))?\b""", RegexOption.IGNORE_CASE)),
+    DOLBY_DIGITAL_FIRST("Dolby Digital primeiro", Regex("""\b(?:DOLBY[\s_-]*DIGITAL(?:[\s_-]*PLUS)?|E[\s_-]?AC[\s_-]?3|AC[\s_-]?3|DDP)\b""", RegexOption.IGNORE_CASE)),
+    TRUEHD_FIRST("TrueHD primeiro", Regex("""\bTRUE[\s_-]?HD\b""", RegexOption.IGNORE_CASE)),
+    AAC_FIRST("AAC primeiro", Regex("""\bAAC\b""", RegexOption.IGNORE_CASE)),
+    FLAC_FIRST("FLAC primeiro", Regex("""\bFLAC\b""", RegexOption.IGNORE_CASE))
+}
 
 data class LeSilHomeData(
     val movieCategories: List<CatalogEntry> = emptyList(),
@@ -116,7 +139,9 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
         initialDetailsMovieId: Int?,
         onCategory: (CatalogEntry) -> Unit,
         onMovie: (CatalogEntry) -> Unit,
-        onMovieFocus: (CatalogEntry, (MovieDetails?) -> Unit) -> Unit
+        onMovieFocus: (CatalogEntry, (MovieDetails?) -> Unit) -> Unit,
+        sortOrder: MovieSortOrder = MovieSortOrder.TITLE_ASC,
+        onSort: ((MovieSortOrder) -> Unit)? = null
     ): View {
         val categoryPanel = categoryColumn("CATEGORIAS", categories, selectedCategoryId, onCategory)
         val content = FrameLayout(context).apply {
@@ -127,17 +152,20 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
         val hero = movieCatalogHero()
         content.addView(hero.root, FrameLayout.LayoutParams(-1, -1))
 
-        val filterButton = catalogIconButton(android.R.drawable.ic_menu_sort_by_size, "Filtrar categoria") {
-            if (categories.isNotEmpty()) {
-                AlertDialog.Builder(context)
-                    .setTitle("Categorias de filmes")
-                    .setItems(categories.map { it.title }.toTypedArray()) { _, index -> onCategory(categories[index]) }
-                    .setNegativeButton("Fechar", null)
-                    .show()
-            }
+        val filterButton = catalogIconButton(android.R.drawable.ic_menu_sort_by_size, "Ordenar filmes") {
+            val options = MovieSortOrder.entries
+            AlertDialog.Builder(context)
+                .setTitle("Ordenar filmes · rótulos do servidor")
+                .setSingleChoiceItems(options.map { it.label }.toTypedArray(), sortOrder.ordinal) { dialog, index ->
+                    dialog.dismiss()
+                    onSort?.invoke(options[index])
+                }
+                .setNegativeButton("Cancelar", null)
+                .show()
         }
         var activeFilter = ""
         val searchButton = catalogIconButton(android.R.drawable.ic_menu_search, "Buscar filme") { }
+        filterButton.visibility = if (onSort == null) View.GONE else View.VISIBLE
         val catalogHorizontalInsetDp = 20
         val rightmostPosterInsetDp = (
             screenWidthDp - COLLAPSED_SIDEBAR_WIDTH_DP - catalogHorizontalInsetDp -
@@ -151,7 +179,7 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
             addView(filterButton, LinearLayout.LayoutParams(dp(38), dp(38)))
         }
         content.addView(controls, FrameLayout.LayoutParams(-2, dp(46), Gravity.TOP or Gravity.END).apply {
-            topMargin = dp(46)
+            topMargin = dp(14)
             rightMargin = dp(rightmostPosterInsetDp)
         })
 
@@ -209,7 +237,7 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
         fun showMovie(movie: CatalogEntry, details: MovieDetails?, position: Int, total: Int) {
             activeMovieId = movie.id
             activeMovieDetails = details
-            renderMovieCatalogHero(hero, movie, details, position, total)
+            renderMovieCatalogHero(hero, movie, details, position, total, categories)
         }
         fun refreshVisiblePosters() {
             val first = grid.firstVisiblePosition
@@ -228,11 +256,11 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
             grid.postDelayed({ if (refreshRequest == posterRefreshGeneration) refreshVisiblePosters() }, 700)
             grid.postDelayed({ if (refreshRequest == posterRefreshGeneration) refreshVisiblePosters() }, 2500)
             if (activeMovieId != movie.id) showMovie(movie, null, position, total)
-            else renderMovieCatalogHero(hero, movie, activeMovieDetails, position, total)
+            else renderMovieCatalogHero(hero, movie, activeMovieDetails, position, total, categories)
             onMovieFocus(movie) { details ->
                 if (activeMovieId == movie.id) {
                     activeMovieDetails = details
-                    renderMovieCatalogHero(hero, movie, details, position, total)
+                    renderMovieCatalogHero(hero, movie, details, position, total, categories)
                 }
             }
         }
@@ -304,7 +332,17 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
                     position + 1
                 }
                 KeyEvent.KEYCODE_DPAD_UP -> {
-                    if (position < GRID_COLUMNS) return true
+                    if (position < GRID_COLUMNS) {
+                        val control = if (column == GRID_COLUMNS - 1 && onSort != null) filterButton else searchButton
+                        if (control.requestFocus()) {
+                            // A pending GridView retry must not pull focus back from the toolbar.
+                            focusRequestGeneration++
+                            deferMovieChildFocusUntil = 0L
+                            grid.descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
+                            focusAnchor.isFocusableInTouchMode = false
+                        }
+                        return true
+                    }
                     position - GRID_COLUMNS
                 }
                 KeyEvent.KEYCODE_DPAD_DOWN -> {
@@ -356,7 +394,7 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
             onMovieFocus(found.first()) { details ->
                 if (activeMovieId == found.first().id) {
                     activeMovieDetails = details
-                    renderMovieCatalogHero(hero, found.first(), details, 1, total)
+                    renderMovieCatalogHero(hero, found.first(), details, 1, total, categories)
                 }
             }
             grid.adapter = object : android.widget.BaseAdapter() {
@@ -401,19 +439,28 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
             grid.invalidateViews()
         }
         searchButton.setOnClickListener {
+            lateinit var dialog: AlertDialog
             val input = EditText(context).apply {
                 hint = "Digite o título do filme"
                 setSingleLine(true)
                 inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
-                imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH
+                imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH or
+                    android.view.inputmethod.EditorInfo.IME_FLAG_NO_EXTRACT_UI or
+                    android.view.inputmethod.EditorInfo.IME_FLAG_NO_FULLSCREEN
                 setText(activeFilter)
                 setSelection(text.length)
                 setTextColor(WHITE)
                 setHintTextColor(SECONDARY)
                 setPadding(dp(14), dp(8), dp(14), dp(8))
                 background = rounded(0xFF0E367B.toInt(), 0xFF72B8FF.toInt(), 10)
+                setOnEditorActionListener { _, actionId, _ ->
+                    if (actionId == android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH) {
+                        dialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick()
+                        true
+                    } else false
+                }
             }
-            AlertDialog.Builder(context)
+            dialog = AlertDialog.Builder(context)
                 .setTitle("Buscar no catálogo")
                 .setView(input)
                 .setPositiveButton("Buscar") { _, _ ->
@@ -427,9 +474,34 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
                     grid.setSelection(0)
                 }
                 .setNegativeButton("Cancelar", null)
-                .show()
-                .window?.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE)
-            input.requestFocus()
+                .create()
+            dialog.window?.setSoftInputMode(
+                android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE or
+                    android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
+            )
+            dialog.setOnShowListener {
+                input.requestFocus()
+                input.post {
+                    (context.getSystemService(Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager)
+                        ?.showSoftInput(input, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
+                }
+            }
+            dialog.show()
+        }
+        searchButton.id = View.generateViewId()
+        filterButton.id = View.generateViewId()
+        searchButton.nextFocusRightId = filterButton.id
+        filterButton.nextFocusLeftId = searchButton.id
+        listOf(searchButton, filterButton).forEach { button ->
+            button.setOnKeyListener { _, keyCode, event ->
+                if (event.action != KeyEvent.ACTION_DOWN) return@setOnKeyListener false
+                when (keyCode) {
+                    KeyEvent.KEYCODE_DPAD_DOWN -> requestMovieFocus(focusedMoviePosition.coerceAtMost(GRID_COLUMNS - 1))
+                    KeyEvent.KEYCODE_DPAD_LEFT -> if (button === filterButton) searchButton.requestFocus() else false
+                    KeyEvent.KEYCODE_DPAD_RIGHT -> if (button === searchButton && onSort != null) filterButton.requestFocus() else true
+                    else -> false
+                }
+            }
         }
         populate("")
         return catalogShell(
@@ -438,7 +510,10 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
                 deferMovieChildFocusUntil = SystemClock.uptimeMillis() + 210L
                 requestMovieFocus(focusedMoviePosition)
             },
-            onContentLeftEdge = { focusedMoviePosition % GRID_COLUMNS == 0 },
+            onContentLeftEdge = {
+                val focused = content.findFocus()
+                focused !== searchButton && focused !== filterButton && focusedMoviePosition % GRID_COLUMNS == 0
+            },
             onContentRefocus = { requestMovieFocus(focusedMoviePosition) }
         )
     }
@@ -851,7 +926,7 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
             gravity = Gravity.TOP
             setPadding(
                 dp(20),
-                dp(42),
+                dp(14),
                 dp((screenWidthDp * 0.32f).toInt()),
                 dp(10)
             )
@@ -897,8 +972,28 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
             setOnClickListener { action() }
         }
 
-    private fun renderMovieCatalogHero(binding: MovieCatalogHeroBinding, movie: CatalogEntry, details: MovieDetails?, position: Int, total: Int) {
-        binding.title.text = details?.title?.takeIf { it.isNotBlank() } ?: movie.title
+    private fun renderMovieCatalogHero(
+        binding: MovieCatalogHeroBinding,
+        movie: CatalogEntry,
+        details: MovieDetails?,
+        position: Int,
+        total: Int,
+        categories: List<CatalogEntry>
+    ) {
+        val title = details?.title?.takeIf { it.isNotBlank() } ?: movie.title
+        val categorySaysLegendado = categories.any { it.id == movie.categoryId &&
+            it.title.contains("legendad", ignoreCase = true) }
+        val titleSaysLegendado = Regex("(?i)\\[L\\]|\\(L\\)|(?:^|[^a-z])(?:legendad[oa]s?|leg)(?:[^a-z]|$)")
+            .containsMatchIn(movie.title)
+        binding.title.text = if ((categorySaysLegendado || titleSaysLegendado) &&
+            !title.contains("legendad", ignoreCase = true)) {
+            SpannableStringBuilder(title).apply {
+                val start = length
+                append("  • LEGENDADO")
+                setSpan(RelativeSizeSpan(0.48f), start, length, 0)
+                setSpan(ForegroundColorSpan(CYAN), start, length, 0)
+            }
+        } else title
         binding.position.text = "$position / $total"
         val rating = details?.rating?.takeIf { it.isNotBlank() && it != "0" } ?: movie.rating?.takeIf { it.isNotBlank() && it != "0" }
         binding.metadata.text = listOfNotNull(

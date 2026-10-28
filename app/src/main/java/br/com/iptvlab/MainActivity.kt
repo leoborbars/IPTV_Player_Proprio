@@ -78,11 +78,13 @@ class MainActivity : Activity() {
     private var selectedMovieCategoryId: Int? = null
     private var selectedSeriesCategoryId: Int? = null
     private val allMoviesCategory = CatalogEntry(-1, "Todos os filmes")
+    private val launchesCategory = CatalogEntry(-3, "Lançamentos")
     private val allSeriesCategory = CatalogEntry(-1, "Todas as séries")
     private val movieDetailsCache = mutableMapOf<Int, MovieDetails>()
     private var movieDetailsRequestGeneration = 0
     private var pendingMovieDetailsRequest: Runnable? = null
     private var currentMovieNav = "Filmes"
+    private var movieSortOrder = MovieSortOrder.TITLE_ASC
     private var backAction: (() -> Unit)? = null
     private var returnFromPlayer: (() -> Unit)? = null
     private var player: ExoPlayer? = null
@@ -90,7 +92,6 @@ class MainActivity : Activity() {
     private var diagnosticView: TextView? = null
     private var diagnosticPanel: LinearLayout? = null
     private var playerActionDock: LinearLayout? = null
-    private var previousSystemUiVisibility: Int? = null
     private var diagnosticsVisible = false
     private var videoDecoder = "aguardando"
     private var audioDecoder = "aguardando"
@@ -138,6 +139,7 @@ class MainActivity : Activity() {
         progressSettingsStore = ProgressSyncSettingsStore(applicationContext)
         root.setBackgroundColor(Color.rgb(12, 17, 25))
         setContentView(root)
+        setAppImmersive()
         val saved = credentialStore.load()
         if (saved != null) {
             startConnection(saved, rememberCredentials = null)
@@ -187,32 +189,26 @@ class MainActivity : Activity() {
         setOnFocusChangeListener { _, focused -> setPlayerButtonBackground(focused) }
         setOnClickListener { action() }
     }
-    private fun setPlayerImmersive(enabled: Boolean) {
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) setAppImmersive()
+    }
+
+    private fun setAppImmersive() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             val controller = window.insetsController ?: return
-            if (enabled) {
-                controller.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-                controller.hide(WindowInsets.Type.systemBars())
-            } else {
-                controller.show(WindowInsets.Type.systemBars())
-            }
+            controller.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            controller.hide(WindowInsets.Type.systemBars())
         } else {
             @Suppress("DEPRECATION")
-            if (enabled) {
-                val decor = window.decorView
-                if (previousSystemUiVisibility == null) previousSystemUiVisibility = decor.systemUiVisibility
-                decor.systemUiVisibility = (
-                    View.SYSTEM_UI_FLAG_FULLSCREEN or
-                        View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
-                        View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
-                        View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
-                        View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
-                        View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-                    )
-            } else {
-                window.decorView.systemUiVisibility = previousSystemUiVisibility ?: View.SYSTEM_UI_FLAG_VISIBLE
-                previousSystemUiVisibility = null
-            }
+            window.decorView.systemUiVisibility = (
+                View.SYSTEM_UI_FLAG_FULLSCREEN or
+                    View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+                    View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
+                    View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
+                    View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
+                    View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                )
         }
     }
     private fun column() = LinearLayout(this).apply {
@@ -610,6 +606,7 @@ class MainActivity : Activity() {
 
     private fun showMovieCategories() {
         currentMovieNav = "Filmes"
+        movieSortOrder = MovieSortOrder.TITLE_ASC
         selectedMovieCategoryId = allMoviesCategory.id
         categoryName = allMoviesCategory.title
         movies = allMovies.sortedBy { it.title.lowercase() }
@@ -623,8 +620,14 @@ class MainActivity : Activity() {
 
     private fun selectMovieCategory(category: CatalogEntry, nav: String) {
         currentMovieNav = nav
+        movieSortOrder = if (category.id == launchesCategory.id) MovieSortOrder.NEWEST else MovieSortOrder.TITLE_ASC
         selectedMovieCategoryId = category.id
         categoryName = category.title
+        if (category.id == launchesCategory.id) {
+            movies = sortByProviderDate(allMovies.filter { it.addedAt != null }).take(50)
+            showMovies()
+            return
+        }
         if (category.id == allMoviesCategory.id) {
             movies = allMovies.sortedBy { it.title.lowercase() }
             showMovies()
@@ -659,18 +662,21 @@ class MainActivity : Activity() {
 
     private fun showMovies() {
         backAction = { if (currentMovieNav == "Filmes 4K") showHome() else showMovieCategories() }
+        val displayedMovies = sortMovies(movies, movieSortOrder)
         replace(leSilUi.movieCatalog(
             title = categoryName,
             selectedNav = currentMovieNav,
             categories = if (currentMovieNav == "Filmes 4K") listOfNotNull(fourKCategory)
-                else listOf(allMoviesCategory) + movieCategories,
+                else listOf(allMoviesCategory, launchesCategory) + movieCategories,
             selectedCategoryId = selectedMovieCategoryId,
-            movies = movies,
-            initialDetails = movies.firstOrNull()?.let { movieDetailsCache[it.id] },
-            initialDetailsMovieId = movies.firstOrNull()?.id,
+            movies = displayedMovies,
+            initialDetails = displayedMovies.firstOrNull()?.let { movieDetailsCache[it.id] },
+            initialDetailsMovieId = displayedMovies.firstOrNull()?.id,
             onCategory = { selectMovieCategory(it, currentMovieNav) },
             onMovie = { movie -> openMovieDetails(movie) { showMovies() } },
-            onMovieFocus = ::requestMovieDetails
+            onMovieFocus = ::requestMovieDetails,
+            sortOrder = movieSortOrder,
+            onSort = { order -> movieSortOrder = order; showMovies() }
         ))
     }
 
@@ -823,6 +829,28 @@ class MainActivity : Activity() {
             .thenBy { it.index })
         .map { it.value }
 
+    private fun sortMovies(entries: List<CatalogEntry>, order: MovieSortOrder): List<CatalogEntry> = when (order) {
+        MovieSortOrder.TITLE_ASC -> entries.sortedBy { it.title.lowercase() }
+        MovieSortOrder.TITLE_DESC -> entries.sortedByDescending { it.title.lowercase() }
+        MovieSortOrder.NEWEST -> sortByProviderDate(entries)
+        MovieSortOrder.OLDEST -> entries.withIndex()
+            .sortedWith(compareBy<IndexedValue<CatalogEntry>> { it.value.addedAt == null }
+                .thenBy { it.value.addedAt ?: 0L }
+                .thenBy { it.index })
+            .map { it.value }
+        else -> {
+            val pattern = requireNotNull(order.formatPattern)
+            val (matching, remaining) = entries.partition { movie ->
+                val details = movieDetailsCache[movie.id]
+                pattern.containsMatchIn(
+                    "${movie.title} ${details?.title.orEmpty()} " +
+                        "${details?.technicalVideo.orEmpty()} ${details?.technicalAudio.orEmpty()}"
+                )
+            }
+            matching + remaining
+        }
+    }
+
     private fun isFourKCategory(name: String): Boolean {
         val normalized = java.text.Normalizer.normalize(name.trim(), java.text.Normalizer.Form.NFD)
             .replace(Regex("\\p{Mn}+"), "")
@@ -851,6 +879,8 @@ class MainActivity : Activity() {
         // PlayerView usa SurfaceView por padrão, preferida para preservar HDR no Android TV.
         val pv = PlayerView(this).apply {
             player = exo
+            setBackgroundColor(Color.BLACK)
+            setShutterBackgroundColor(Color.BLACK)
     useController = true
     setControllerAutoShow(false)
     setControllerHideOnTouch(true)
@@ -860,7 +890,8 @@ class MainActivity : Activity() {
             setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING)
         }
     playerView = pv
-    setPlayerImmersive(true)
+    setAppImmersive()
+        root.setBackgroundColor(Color.BLACK)
         root.removeAllViews()
         root.addView(pv, FrameLayout.LayoutParams(-1, -1))
         pv.findViewById<View>(androidx.media3.ui.R.id.exo_settings)?.visibility = View.GONE
@@ -1053,6 +1084,7 @@ class MainActivity : Activity() {
 
     private fun stopPlayer() {
         saveCurrentProgress(syncRemote = true)
+        root.setBackgroundColor(Color.rgb(12, 17, 25))
         uiHandler.removeCallbacks(refresh)
         uiHandler.removeCallbacks(saveProgressTick)
         playerView?.player = null
@@ -1064,7 +1096,6 @@ class MainActivity : Activity() {
     diagnosticPanel = null
     playerActionDock = null
     diagnosticsVisible = false
-    setPlayerImmersive(false)
     }
 
     private fun leavePlayer() {
