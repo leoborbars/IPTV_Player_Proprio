@@ -6,17 +6,22 @@ Aplicativo VOD para Android TV/Google TV e Android, com catálogo Xtream Codes, 
 
 ## Estado atual
 
-- Home e catálogo de filmes com categorias, busca, capas, arte de fundo e navegação por D-pad. Na TV, o painel de categorias desliza sem deslocar o cabeçalho do filme, e a grade mantém o tamanho das capas durante a navegação.
-- Catálogo de séries disponível; temporadas e episódios ainda precisam da implementação da próxima etapa.
+- Home com destaque compacto e fileiras de capas, além do catálogo de filmes com categorias, busca, arte de fundo e navegação por D-pad. Na TV, o painel de categorias desliza sem deslocar o cabeçalho do filme, e a grade mantém o tamanho das capas durante a navegação.
+- Filmes e séries aparecem do mais recente para o mais antigo em todas as categorias, conforme a data/hora informada pelo provedor. Itens sem data ficam ao final. O menu Lançamentos foi removido; as opções de ordenação manual continuam disponíveis.
+- Séries usam a mesma grade e navegação dos filmes, com sinopse e número de temporadas da série selecionada. Ao abrir uma série, o app mostra apenas temporadas com episódios, que reproduzem no Media3.
+- Ao iniciar ou selecionar **Atualizar** no menu principal, uma tela de atualização ocupa toda a tela até o catálogo carregar. **Continuar assistindo** permanece na Home.
 - Player Media3 existente com controles e diagnóstico de reprodução.
-- Progresso local de filmes e fileira **Continuar**.
-- Sincronização opcional do progresso entre TV e celular por um serviço próprio no NAS/OpenMediaVault.
+- Progresso local de filmes e episódios. Episódios concluídos aparecem em verde; os em andamento mostram a porcentagem e retomam do ponto salvo.
+- **Favoritos** ficam nas categorias de Filmes e Séries. Segure uma capa por 3 segundos no controle ou na tela para adicionar/remover; a estrela aparece no título da capa.
+- Sincronização opcional do progresso e dos favoritos entre TV e celular por um serviço próprio no NAS/OpenMediaVault.
 - Em **Configurações**, o app mostra o estado da conexão com o NAS.
 - O item **Filmes 4K** foi removido do menu lateral. Conteúdos 4K ainda podem aparecer conforme as categorias e os dados fornecidos pelo catálogo.
 
 A versão Android é `0.3-lesil` (APK Debug). O ícone Le&Sil integrado ao app está em `app/src/main/res/drawable-nodpi/lesil_icon.png`. Confirme a navegação e a reprodução 4K HDR/áudio multicanal nos equipamentos; a sinalização informada pelo app não substitui a validação da imagem na TV nem do formato recebido pelo receiver. Consulte [TESTE_NA_TCL.md](TESTE_NA_TCL.md) e [testes_4k_audio.csv](testes_4k_audio.csv).
 
 O serviço no NAS respondeu `{"status":"ok"}` em `/health`. A sincronização entre os dois aparelhos também foi exercitada após a migração do perfil antigo: o celular recuperou registros que já estavam salvos pela TV.
+
+Para sincronizar **favoritos e episódios**, atualize o `nas-progress/server.py` no NAS e reconstrua o container conforme [as instruções do serviço](nas-progress/README.md). A versão antiga da API não aceita esses novos registros; até a atualização, eles ficam salvos no aparelho.
 
 Em 27/10/2026, o APK Debug foi instalado na TCL e a navegação dos filmes foi testada por ADB: 20 linhas percorridas, movimento lateral entre capas, retorno da primeira coluna para **Categorias** e entrada/saída da categoria **DC**. O app permaneceu aberto e o log não mostrou exceção fatal nesse percurso. Esse teste não incluiu reprodução de vídeo. Os vídeos `Fotos_iptvplayer/video1.mp4` e `video4.mp4` serviram de referência para o movimento dos painéis.
 
@@ -135,8 +140,9 @@ Confirme que o dispositivo aparece como `device` antes de instalar. Para o Motor
 
 1. Abra o Le&Sil Stream e configure o servidor Xtream, usuário e senha. Informe o esquema (`https://` ou `http://`) e a porta quando necessário.
 2. Navegue com o controle remoto/D-pad pelo menu lateral e pelas fileiras do catálogo. A disponibilidade de capas, sinopses, backdrops e metadados depende do provedor.
-3. Abra um filme para reproduzir no player Media3. O progresso salvo aparece em **Continuar** e pode ser retomado após fechar o app.
-4. Para usar o progresso entre TV e celular, configure o NAS nos dois dispositivos com o mesmo nome de usuário Xtream, endereço do NAS e token.
+3. Abra um filme ou episódio para reproduzir no player Media3. O progresso do filme aparece em **Continuar assistindo** na Home; o do episódio aparece na tela de temporadas.
+4. Em **Filmes** ou **Séries → Categorias → Favoritos**, veja os itens salvos. Mantenha **OK** pressionado por 3 segundos sobre uma capa, ou segure o dedo no celular, para adicionar ou remover o favorito.
+5. Use **Atualizar** no menu principal para buscar novamente o catálogo do servidor. Para sincronizar progresso e favoritos entre TV e celular, configure o NAS nos dois dispositivos com o mesmo nome de usuário Xtream, endereço do NAS e token e atualize o serviço no NAS.
 
 ### Navegar pelo catálogo na TV
 

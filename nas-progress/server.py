@@ -13,7 +13,7 @@ TOKEN = os.environ.get("PROGRESS_SYNC_TOKEN", "")
 DB_PATH = os.environ.get("PROGRESS_DB_PATH", "/data/progress.sqlite3")
 PORT = int(os.environ.get("PORT", "8787"))
 PROFILE_RE = re.compile(r"^[a-f0-9]{64}$")
-MEDIA_RE = re.compile(r"^[0-9]{1,20}$")
+MEDIA_RE = re.compile(r"^(?:[0-9]{1,20}|episode:[0-9]{1,20})$")
 
 if len(TOKEN) < 32:
     raise SystemExit("PROGRESS_SYNC_TOKEN precisa ter pelo menos 32 caracteres")
@@ -34,6 +34,18 @@ def connect_db():
             updated_at INTEGER NOT NULL,
             completed INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (profile_id, media_id)
+        )
+    """)
+    connection.execute("""
+        CREATE TABLE IF NOT EXISTS favorites (
+            profile_id TEXT NOT NULL,
+            media_type TEXT NOT NULL,
+            media_id INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            poster_url TEXT,
+            updated_at INTEGER NOT NULL,
+            active INTEGER NOT NULL DEFAULT 1,
+            PRIMARY KEY (profile_id, media_type, media_id)
         )
     """)
     return connection
@@ -65,7 +77,7 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/health":
             self.send_json(200, {"status": "ok"})
             return
-        if parsed.path != "/api/v1/progress":
+        if parsed.path not in ("/api/v1/progress", "/api/v1/favorites"):
             self.send_json(404, {"error": "not_found"})
             return
         if not self.authorized():
@@ -76,15 +88,23 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(400, {"error": "invalid_profile_id"})
             return
         with connect_db() as db:
-            rows = db.execute(
-                "SELECT media_id,title,poster_url,position_ms,duration_ms,updated_at,completed "
-                "FROM progress WHERE profile_id=? ORDER BY updated_at DESC LIMIT 500",
-                (profile_id,),
-            ).fetchall()
+            if parsed.path == "/api/v1/progress":
+                rows = db.execute(
+                    "SELECT media_id,title,poster_url,position_ms,duration_ms,updated_at,completed "
+                    "FROM progress WHERE profile_id=? ORDER BY updated_at DESC LIMIT 5000",
+                    (profile_id,),
+                ).fetchall()
+            else:
+                rows = db.execute(
+                    "SELECT media_type,media_id,title,poster_url,updated_at,active "
+                    "FROM favorites WHERE profile_id=? ORDER BY updated_at DESC LIMIT 5000",
+                    (profile_id,),
+                ).fetchall()
         self.send_json(200, {"items": [dict(row) for row in rows]})
 
     def do_PUT(self):
-        if urlparse(self.path).path != "/api/v1/progress":
+        path = urlparse(self.path).path
+        if path not in ("/api/v1/progress", "/api/v1/favorites"):
             self.send_json(404, {"error": "not_found"})
             return
         if not self.authorized():
@@ -96,33 +116,52 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("invalid_body_size")
             item = json.loads(self.rfile.read(length))
             profile_id = str(item.get("profile_id", ""))
-            media_id = str(item.get("media_id", ""))
             title = str(item.get("title", "Sem título")).strip()[:500] or "Sem título"
             poster_url = item.get("poster_url")
             if poster_url is not None:
                 poster_url = str(poster_url)[:2048]
                 if not poster_url.startswith(("http://", "https://")):
                     poster_url = None
-            position_ms = max(0, min(int(item.get("position_ms", 0)), 7 * 24 * 60 * 60 * 1000))
-            duration_ms = max(0, min(int(item.get("duration_ms", 0)), 7 * 24 * 60 * 60 * 1000))
             updated_at = max(0, min(int(item.get("updated_at", int(time.time() * 1000))), int(time.time() * 1000) + 300000))
-            completed = 1 if bool(item.get("completed", False)) else 0
-            if not PROFILE_RE.fullmatch(profile_id) or not MEDIA_RE.fullmatch(media_id):
+            if not PROFILE_RE.fullmatch(profile_id):
                 raise ValueError("invalid_id")
+            if path == "/api/v1/progress":
+                media_id = str(item.get("media_id", ""))
+                if not MEDIA_RE.fullmatch(media_id):
+                    raise ValueError("invalid_id")
+                position_ms = max(0, min(int(item.get("position_ms", 0)), 7 * 24 * 60 * 60 * 1000))
+                duration_ms = max(0, min(int(item.get("duration_ms", 0)), 7 * 24 * 60 * 60 * 1000))
+                completed = 1 if bool(item.get("completed", False)) else 0
+            else:
+                media_type = str(item.get("media_type", ""))
+                media_id = int(item.get("media_id", 0))
+                if media_type not in ("movie", "series") or not 0 < media_id <= 2**31 - 1:
+                    raise ValueError("invalid_id")
+                active = 1 if bool(item.get("active", False)) else 0
         except (ValueError, TypeError, json.JSONDecodeError):
             self.send_json(400, {"error": "invalid_payload"})
             return
 
         with connect_db() as db:
-            db.execute("""
-                INSERT INTO progress(profile_id,media_id,title,poster_url,position_ms,duration_ms,updated_at,completed)
-                VALUES(?,?,?,?,?,?,?,?)
-                ON CONFLICT(profile_id,media_id) DO UPDATE SET
-                    title=excluded.title, poster_url=excluded.poster_url,
-                    position_ms=excluded.position_ms, duration_ms=excluded.duration_ms,
-                    updated_at=excluded.updated_at, completed=excluded.completed
-                WHERE excluded.updated_at >= progress.updated_at
-            """, (profile_id, media_id, title, poster_url, position_ms, duration_ms, updated_at, completed))
+            if path == "/api/v1/progress":
+                db.execute("""
+                    INSERT INTO progress(profile_id,media_id,title,poster_url,position_ms,duration_ms,updated_at,completed)
+                    VALUES(?,?,?,?,?,?,?,?)
+                    ON CONFLICT(profile_id,media_id) DO UPDATE SET
+                        title=excluded.title, poster_url=excluded.poster_url,
+                        position_ms=excluded.position_ms, duration_ms=excluded.duration_ms,
+                        updated_at=excluded.updated_at, completed=excluded.completed
+                    WHERE excluded.updated_at >= progress.updated_at
+                """, (profile_id, media_id, title, poster_url, position_ms, duration_ms, updated_at, completed))
+            else:
+                db.execute("""
+                    INSERT INTO favorites(profile_id,media_type,media_id,title,poster_url,updated_at,active)
+                    VALUES(?,?,?,?,?,?,?)
+                    ON CONFLICT(profile_id,media_type,media_id) DO UPDATE SET
+                        title=excluded.title, poster_url=excluded.poster_url,
+                        updated_at=excluded.updated_at, active=excluded.active
+                    WHERE excluded.updated_at >= favorites.updated_at
+                """, (profile_id, media_type, media_id, title, poster_url, updated_at, active))
         self.send_json(200, {"status": "saved"})
 
     def do_OPTIONS(self):

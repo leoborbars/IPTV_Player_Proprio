@@ -28,6 +28,25 @@ class ProgressSyncClient(private val settings: ProgressSyncSettings) {
         request("PUT", "/api/v1/progress", payload)
     }
 
+    fun fetchFavorites(profileId: String): List<FavoriteEntry> {
+        val query = URLEncoder.encode(profileId, Charsets.UTF_8.name())
+        val body = request("GET", "/api/v1/favorites?profile_id=$query", null)
+        val items = JSONObject(body).optJSONArray("items") ?: JSONArray()
+        return (0 until items.length()).mapNotNull { index -> parseFavorite(items.optJSONObject(index)) }
+    }
+
+    fun upsertFavorite(profileId: String, item: FavoriteEntry) {
+        val payload = JSONObject()
+            .put("profile_id", profileId)
+            .put("media_type", item.mediaType)
+            .put("media_id", item.mediaId)
+            .put("title", item.title.take(500))
+            .put("poster_url", item.posterUrl)
+            .put("updated_at", item.updatedAt)
+            .put("active", item.active)
+        request("PUT", "/api/v1/favorites", payload)
+    }
+
     private fun request(method: String, path: String, payload: JSONObject?): String {
         val base = settings.endpoint.trim().trimEnd('/')
         val connection = URL(base + path).openConnection() as HttpURLConnection
@@ -62,7 +81,28 @@ class ProgressSyncClient(private val settings: ProgressSyncSettings) {
             positionMs = json.optLong("position_ms").coerceAtLeast(0),
             durationMs = json.optLong("duration_ms").coerceAtLeast(0),
             updatedAt = json.optLong("updated_at").coerceAtLeast(0),
-            completed = json.optBoolean("completed", false)
+            completed = storedBoolean(json, "completed")
         )
     }.getOrNull()
+
+    private fun parseFavorite(json: JSONObject?): FavoriteEntry? = runCatching {
+        json ?: return null
+        val type = json.getString("media_type")
+        if (type != "movie" && type != "series") return null
+        FavoriteEntry(
+            mediaType = type,
+            mediaId = json.getInt("media_id"),
+            title = json.optString("title", "Sem título"),
+            posterUrl = json.optString("poster_url").takeIf { it.isNotBlank() && it != "null" },
+            updatedAt = json.optLong("updated_at").coerceAtLeast(0),
+            active = storedBoolean(json, "active")
+        )
+    }.getOrNull()
+
+    private fun storedBoolean(json: JSONObject, key: String): Boolean = when (val value = json.opt(key)) {
+        is Boolean -> value
+        is Number -> value.toInt() != 0
+        is String -> value.equals("true", true) || value == "1"
+        else -> false
+    }
 }

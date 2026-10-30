@@ -1,6 +1,6 @@
 # Le&Sil Progress Sync no OpenMediaVault
 
-Este serviço próprio mantém o progresso de reprodução do Le&Sil Stream sincronizado entre dispositivos na rede local. Ele roda em Docker Compose, usa SQLite num volume persistente e não recebe usuário/senha Xtream nem URLs dos vídeos.
+Este serviço próprio mantém o progresso de reprodução e os favoritos do Le&Sil Stream sincronizados entre dispositivos na rede local. Ele roda em Docker Compose, usa SQLite num volume persistente e não recebe usuário/senha Xtream nem URLs dos vídeos.
 
 ## Ambiente instalado
 
@@ -56,6 +56,16 @@ Se houver `permission denied` para `/var/run/docker.sock`, execute com `sudo`, p
 
 Para reiniciar, use `docker compose restart`. Para reconstruir após atualizar `server.py` ou o `Dockerfile`, copie os arquivos e rode `docker compose up -d --build`. `docker compose down` mantém o volume; **não** use `docker compose down -v`, pois `-v` apaga o banco persistente.
 
+Após atualizar para a versão com favoritos e episódios, copie `server.py` para `/home/pi/nas-progress/server.py` e execute no NAS:
+
+```sh
+cd ~/nas-progress
+sudo docker compose up -d --build
+curl http://127.0.0.1:8787/health
+```
+
+O banco SQLite cria a tabela de favoritos automaticamente. O volume e os progressos antigos são preservados. Sem essa atualização, os novos APKs ainda guardam os favoritos e episódios localmente, mas o NAS antigo responderá `404` para favoritos e `400` para progresso de episódios.
+
 ## Configurar o Le&Sil Stream
 
 Há duas formas:
@@ -78,10 +88,12 @@ Em **Configurações**, o app mostra o estado de conexão com a API. Quando o NA
 
 - `GET /health`: teste sem autenticação, responde `{"status":"ok"}`.
 - `GET /api/v1/progress?profile_id=<sha256>`: lista progresso; exige `Authorization: Bearer <token>`.
-- `PUT /api/v1/progress`: grava/atualiza um item; exige o mesmo cabeçalho.
+- `PUT /api/v1/progress`: grava/atualiza um filme ou episódio; exige o mesmo cabeçalho. Episódios usam `media_id` no formato `episode:<id>`.
+- `GET /api/v1/favorites?profile_id=<sha256>`: lista filmes e séries favoritos, inclusive remoções pendentes; exige o mesmo token.
+- `PUT /api/v1/favorites`: adiciona ou remove um favorito; exige o mesmo token. Remoções ficam registradas para sincronizar aparelhos que estavam offline.
 - Banco: `/data/progress.sqlite3` dentro do container, persistido pelo volume `progress-data`.
 
-O serviço salva ID da mídia, título, pôster, posição, duração, data de atualização e estado concluído. A API devolve até 500 registros mais recentes por perfil. Os logs HTTP não registram URLs nem conteúdo assistido.
+O serviço salva ID da mídia, título, pôster, posição, duração, data de atualização e estado concluído. Favoritos têm tabela separada com tipo de mídia, título, pôster e estado ativo/removido. Cada API devolve até 5000 registros mais recentes por perfil. Os logs HTTP não registram URLs nem conteúdo assistido.
 
 ## Segurança
 

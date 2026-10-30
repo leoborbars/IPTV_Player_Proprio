@@ -14,7 +14,8 @@ data class CatalogEntry(
     val posterUrl: String? = null,
     val categoryId: Int? = null,
     val addedAt: Long? = null,
-    val rating: String? = null
+    val rating: String? = null,
+    val plot: String? = null
 )
 
 data class SeriesEntry(
@@ -23,7 +24,39 @@ data class SeriesEntry(
     val coverUrl: String? = null,
     val categoryId: Int? = null,
     val addedAt: Long? = null,
-    val rating: String? = null
+    val rating: String? = null,
+    val plot: String? = null
+)
+
+data class EpisodeEntry(
+    val id: Int,
+    val seasonNumber: Int,
+    val number: Int,
+    val title: String,
+    val extension: String,
+    val imageUrl: String? = null,
+    val plot: String? = null,
+    val duration: String? = null
+)
+
+data class SeasonEntry(
+    val number: Int,
+    val title: String,
+    val coverUrl: String? = null,
+    val episodes: List<EpisodeEntry> = emptyList()
+)
+
+data class SeriesDetails(
+    val title: String? = null,
+    val coverUrl: String? = null,
+    val backdropUrl: String? = null,
+    val plot: String? = null,
+    val cast: String? = null,
+    val director: String? = null,
+    val genre: String? = null,
+    val year: String? = null,
+    val rating: String? = null,
+    val seasons: List<SeasonEntry> = emptyList()
 )
 
 data class MovieDetails(
@@ -130,11 +163,79 @@ class XtreamClient(val server: String, val username: String, val password: Strin
                 title = title,
                 coverUrl = safeImageUrl(item.opt("cover")) ?: safeImageUrl(item.opt("stream_icon")),
                 categoryId = flexibleInt(item.opt("category_id")),
-                addedAt = flexibleTimestamp(item.opt("last_modified")) ?: flexibleTimestamp(item.opt("added")),
-                rating = textValue(item.opt("rating"))
+                addedAt = flexibleTimestamp(item.opt("added")) ?: flexibleTimestamp(item.opt("last_modified")),
+                rating = textValue(item.opt("rating")),
+                plot = textValue(item.opt("plot")) ?: textValue(item.opt("description"))
             )
         }
         return result.sortedBy { it.title.lowercase() }
+    }
+
+    fun seriesDetails(seriesId: Int): SeriesDetails {
+        val root = JSONObject(loadJson(endpoint("get_series_info", mapOf("series_id" to seriesId.toString()))))
+        val info = root.optJSONObject("info") ?: JSONObject()
+        val seasonMetadata = mutableMapOf<Int, Pair<String?, String?>>()
+        root.optJSONArray("seasons")?.let { seasonArray ->
+            for (index in 0 until seasonArray.length()) {
+                val season = seasonArray.optJSONObject(index) ?: continue
+                val number = flexibleInt(season.opt("season_number"))
+                    ?: flexibleInt(season.opt("number")) ?: continue
+                seasonMetadata[number] = textValue(season.opt("name")) to
+                    (safeImageUrl(season.opt("cover_big")) ?: safeImageUrl(season.opt("cover")))
+            }
+        }
+        val episodeGroups = root.optJSONObject("episodes") ?: JSONObject()
+        val seasonNumbers = seasonMetadata.keys.toMutableSet()
+        val keys = episodeGroups.keys()
+        while (keys.hasNext()) keys.next().toIntOrNull()?.let(seasonNumbers::add)
+        val seasons = seasonNumbers.sorted().map { number ->
+            val episodes = episodeGroups.optJSONArray(number.toString()) ?: JSONArray()
+            val parsed = ArrayList<EpisodeEntry>(episodes.length())
+            for (index in 0 until episodes.length()) {
+                val episode = episodes.optJSONObject(index) ?: continue
+                val id = flexibleInt(episode.opt("id")) ?: continue
+                val episodeInfo = episode.optJSONObject("info") ?: JSONObject()
+                parsed += EpisodeEntry(
+                    id = id,
+                    seasonNumber = number,
+                    number = flexibleInt(episode.opt("episode_num")) ?: index + 1,
+                    title = textValue(episode.opt("title")).orEmpty().ifBlank { "Episódio ${index + 1}" },
+                    extension = textValue(episode.opt("container_extension")).orEmpty(),
+                    imageUrl = safeImageUrl(episodeInfo.opt("movie_image"))
+                        ?: safeImageUrl(episodeInfo.opt("cover_big"))
+                        ?: safeImageUrl(episode.opt("stream_icon")),
+                    plot = textValue(episodeInfo.opt("plot")) ?: textValue(episode.opt("plot")),
+                    duration = textValue(episodeInfo.opt("duration"))
+                )
+            }
+            val metadata = seasonMetadata[number]
+            SeasonEntry(
+                number = number,
+                title = metadata?.first ?: if (number == 0) "Especiais" else "Temporada $number",
+                coverUrl = metadata?.second,
+                episodes = parsed.sortedWith(compareBy<EpisodeEntry> { it.number }.thenBy { it.id })
+            )
+        }
+        val release = textValue(info.opt("releaseDate")) ?: textValue(info.opt("release_date"))
+            ?: textValue(info.opt("year"))
+        return SeriesDetails(
+            title = textValue(info.opt("name")),
+            coverUrl = safeImageUrl(info.opt("cover")) ?: safeImageUrl(info.opt("cover_big")),
+            backdropUrl = firstImage(info.opt("backdrop_path")) ?: firstImage(info.opt("backdrop")),
+            plot = textValue(info.opt("plot")),
+            cast = textValue(info.opt("cast")) ?: textValue(info.opt("actors")),
+            director = textValue(info.opt("director")),
+            genre = textValue(info.opt("genre")),
+            year = release?.let { YEAR_REGEX.find(it)?.value },
+            rating = textValue(info.opt("rating")),
+            seasons = seasons
+        )
+    }
+
+    fun episodeUrl(episode: EpisodeEntry): String {
+        val extension = episode.extension.trim().lowercase()
+        require(extension.matches(Regex("[a-z0-9]{2,6}"))) { "Extensão do episódio não reconhecida" }
+        return "${server.trimEnd('/')}/series/${Uri.encode(username)}/${Uri.encode(password)}/${episode.id}.$extension"
     }
 
     fun movieUrl(entry: CatalogEntry): String {
