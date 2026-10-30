@@ -25,6 +25,7 @@ class ProgressSyncClient(private val settings: ProgressSyncSettings) {
             .put("duration_ms", item.durationMs.coerceAtLeast(0))
             .put("updated_at", item.updatedAt)
             .put("completed", item.completed)
+            .put("hidden_from_continue", item.hiddenFromContinue)
         request("PUT", "/api/v1/progress", payload)
     }
 
@@ -81,7 +82,8 @@ class ProgressSyncClient(private val settings: ProgressSyncSettings) {
             positionMs = json.optLong("position_ms").coerceAtLeast(0),
             durationMs = json.optLong("duration_ms").coerceAtLeast(0),
             updatedAt = json.optLong("updated_at").coerceAtLeast(0),
-            completed = storedBoolean(json, "completed")
+            completed = storedBoolean(json, "completed"),
+            hiddenFromContinue = storedBoolean(json, "hidden_from_continue")
         )
     }.getOrNull()
 

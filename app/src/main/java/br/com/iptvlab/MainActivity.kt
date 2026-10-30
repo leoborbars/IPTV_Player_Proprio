@@ -66,7 +66,6 @@ class MainActivity : Activity() {
     private var seriesCategories: List<CatalogEntry> = emptyList()
     private var allMovies: List<CatalogEntry> = emptyList()
     private var fourKCategory: CatalogEntry? = null
-    private var fourKMovies: List<CatalogEntry> = emptyList()
     private var recentMovies: List<CatalogEntry> = emptyList()
     private var featuredMovie: CatalogEntry? = null
     private var featuredDetails: MovieDetails? = null
@@ -129,6 +128,8 @@ class MainActivity : Activity() {
             onNavigate = ::navigate,
             onRetry = ::retryCatalog,
             onPlay = { movie -> playMovie(movie) { showHome() } },
+            onContinueOpen = ::openContinueItem,
+            onContinueRemove = ::removeContinueItem,
             onMovieDetails = { movie -> openMovieDetails(movie) { showHome() } },
             onMovieCategory = { category -> selectMovieCategory(category, "Filmes 4K") },
             onMovieFocus = ::requestMovieDetails,
@@ -326,11 +327,6 @@ class MainActivity : Activity() {
             val loadedCategories = c.movieCategories()
             val loadedMovies = c.movies()
             val loadedFourKCategory = loadedCategories.firstOrNull { isFourKCategory(it.title) }
-            val loadedFourKMovies = loadedFourKCategory?.let { category ->
-                loadedMovies.filter { it.categoryId == category.id }.ifEmpty {
-                    runCatching { c.movies(category.id) }.getOrDefault(emptyList())
-                }
-            }.orEmpty()
             val loadedSeriesCategories = runCatching { c.seriesCategories() }.getOrDefault(emptyList())
             val loadedSeries = runCatching { c.series() }.getOrDefault(emptyList())
             val loadedRecent = sortByProviderDate(loadedMovies)
@@ -343,7 +339,6 @@ class MainActivity : Activity() {
                 seriesCategories = loadedSeriesCategories
                 allMovies = loadedMovies
                 fourKCategory = loadedFourKCategory
-                fourKMovies = sortByProviderDate(loadedFourKMovies)
                 recentMovies = loadedRecent
                 featuredMovie = loadedFeatured
                 featuredDetails = loadedDetails
@@ -368,7 +363,6 @@ class MainActivity : Activity() {
         seriesCategories = emptyList()
         allMovies = emptyList()
         fourKCategory = null
-        fourKMovies = emptyList()
         recentMovies = emptyList()
         featuredMovie = null
         featuredDetails = null
@@ -398,10 +392,8 @@ class MainActivity : Activity() {
         featuredMovie = featuredMovie,
         featuredDetails = featuredDetails,
         featuredCategory = featuredCategoryName,
-        fourKCategory = fourKCategory,
-        fourKMovies = fourKMovies,
         recentMovies = recentMovies,
-        continueWatching = continueEntries(),
+        continueWatching = continueItems(),
         featuredSeries = featuredSeries,
         loading = homeLoading,
         errorMessage = homeError,
@@ -444,6 +436,78 @@ class MainActivity : Activity() {
             val catalogItem = catalogById[id]
             (catalogItem ?: CatalogEntry(id, progress.title, posterUrl = progress.posterUrl))
                 .copy(posterUrl = progress.posterUrl ?: catalogItem?.posterUrl)
+        }
+    }
+
+    private fun continueItems(): List<ContinueWatchingItem> {
+        val profile = activeProfileId ?: return emptyList()
+        val catalogById = allMovies.associateBy { it.id }
+        return progressStore.list(profile).mapNotNull { progress ->
+            if (progress.mediaId.startsWith("episode:")) {
+                ContinueWatchingItem(progress.mediaId, progress.title, progress.posterUrl)
+            } else {
+                val id = progress.mediaId.toIntOrNull() ?: return@mapNotNull null
+                val movie = catalogById[id]
+                ContinueWatchingItem(progress.mediaId, movie?.title ?: progress.title,
+                    progress.posterUrl ?: movie?.posterUrl, movie?.rating)
+            }
+        }
+    }
+
+    private fun removeContinueItem(mediaId: String) {
+        val profile = activeProfileId ?: return
+        val current = progressStore.get(profile, mediaId) ?: return
+        val removed = current.copy(
+            hiddenFromContinue = true,
+            updatedAt = maxOf(System.currentTimeMillis(), current.updatedAt + 1)
+        )
+        progressStore.save(profile, removed)
+        showHome()
+        msg("Removido de Continuar assistindo")
+        worker.execute { syncProgressItem(profile, removed) }
+    }
+
+    private fun openContinueItem(mediaId: String) {
+        val profile = activeProfileId ?: return
+        val progress = progressStore.get(profile, mediaId) ?: return
+        if (!mediaId.startsWith("episode:")) {
+            val movieId = mediaId.toIntOrNull() ?: return
+            val movie = allMovies.firstOrNull { it.id == movieId }
+                ?: CatalogEntry(movieId, progress.title, posterUrl = progress.posterUrl)
+            playMovie(movie) { showHome() }
+            return
+        }
+        val episodeId = mediaId.removePrefix("episode:").toIntOrNull() ?: return
+        val seriesTitle = progress.title.substringBefore(" · S")
+        val series = featuredSeries.firstOrNull { it.title.equals(seriesTitle, ignoreCase = true) }
+        if (series == null) {
+            msg("Série não encontrada no catálogo atual")
+            return
+        }
+        fun resume(details: SeriesDetails) {
+            val episode = details.seasons.asSequence().flatMap { it.episodes.asSequence() }
+                .firstOrNull { it.id == episodeId }
+            if (episode == null) openSeriesDetails(series) else playEpisode(series, details, episode)
+        }
+        seriesDetailsCache[series.id]?.let { resume(it); return }
+        val activeClient = client ?: return
+        val generation = connectionGeneration
+        val loading = leSilUi.messageScreen("Séries", series.title,
+            "Localizando episódio para continuar…", "Voltar") { showHome() }
+        backAction = { showHome() }
+        replace(loading)
+        worker.execute {
+            val details = runCatching { activeClient.seriesDetails(series.id) }.getOrNull()
+            runOnUiThread {
+                if (generation != connectionGeneration || root.getChildAt(0) !== loading) return@runOnUiThread
+                if (details == null) {
+                    msg("Não foi possível carregar o episódio")
+                    showHome()
+                } else {
+                    seriesDetailsCache[series.id] = details
+                    resume(details)
+                }
+            }
         }
     }
 
@@ -599,7 +663,12 @@ class MainActivity : Activity() {
             progressStore.merge(profileId, remote + legacyRemote)
             val remoteById = remote.associateBy { it.mediaId }
             progressStore.all(profileId)
-                .filter { it.updatedAt > (remoteById[it.mediaId]?.updatedAt ?: 0L) }
+                .filter { item ->
+                    val remoteItem = remoteById[item.mediaId]
+                    item.updatedAt > (remoteItem?.updatedAt ?: 0L) ||
+                        (item.updatedAt == remoteItem?.updatedAt && item.hiddenFromContinue &&
+                            remoteItem.hiddenFromContinue != true)
+                }
                 .forEach { syncClient.upsert(profileId, it) }
             lastProgressSyncAt = System.currentTimeMillis()
             remote.size to progressStore.all(profileId).size
@@ -729,7 +798,8 @@ class MainActivity : Activity() {
 
     private fun selectMovieCategory(category: CatalogEntry, nav: String) {
         currentMovieNav = nav
-        movieSortOrder = MovieSortOrder.NEWEST
+        movieSortOrder = if (category.id == favoriteMoviesCategory.id) MovieSortOrder.TITLE_ASC
+            else MovieSortOrder.NEWEST
         selectedMovieCategoryId = category.id
         categoryName = category.title
         if (category.id == favoriteMoviesCategory.id) {
@@ -773,7 +843,9 @@ class MainActivity : Activity() {
     private fun showMovies() {
         activeCatalogSection = "movie"
         backAction = { if (currentMovieNav == "Filmes 4K") showHome() else showMovieCategories() }
-        val displayedMovies = sortMovies(movies, movieSortOrder)
+        val isFavorites = selectedMovieCategoryId == favoriteMoviesCategory.id
+        val effectiveSort = if (isFavorites) MovieSortOrder.TITLE_ASC else movieSortOrder
+        val displayedMovies = sortMovies(movies, effectiveSort)
         replace(leSilUi.movieCatalog(
             title = categoryName,
             selectedNav = currentMovieNav,
@@ -791,13 +863,14 @@ class MainActivity : Activity() {
             },
             favoriteIds = activeProfileId?.let { favoriteStore.active(it, "movie").map(FavoriteEntry::mediaId).toSet() }.orEmpty(),
             onToggleFavorite = { movie -> toggleFavorite("movie", movie.id, movie.title, movie.posterUrl) },
-            sortOrder = movieSortOrder,
-            onSort = { order -> movieSortOrder = order; showMovies() }
+            sortOrder = effectiveSort,
+            onSort = if (isFavorites) null else { order -> movieSortOrder = order; showMovies() }
         ))
     }
 
     private fun selectSeriesCategory(category: CatalogEntry) {
-        seriesSortOrder = MovieSortOrder.NEWEST
+        seriesSortOrder = if (category.id == favoriteSeriesCategory.id) MovieSortOrder.TITLE_ASC
+            else MovieSortOrder.NEWEST
         if (category.id == allSeriesCategory.id) {
             selectedSeriesCategoryId = allSeriesCategory.id
             showSeries(null, featuredSeries)
@@ -834,7 +907,9 @@ class MainActivity : Activity() {
         openingSeriesId = null
         visibleSeriesCategory = category
         visibleSeries = items
-        val displayedSeries = sortSeries(items, seriesSortOrder)
+        val isFavorites = selectedSeriesCategoryId == favoriteSeriesCategory.id
+        val effectiveSort = if (isFavorites) MovieSortOrder.TITLE_ASC else seriesSortOrder
+        val displayedSeries = sortSeries(items, effectiveSort)
         backAction = { showSeriesCategories() }
         replace(leSilUi.seriesCatalog(
             title = category?.title ?: allSeriesCategory.title,
@@ -851,8 +926,8 @@ class MainActivity : Activity() {
             favoriteIds = activeProfileId?.let { favoriteStore.active(it, "series").map(FavoriteEntry::mediaId).toSet() }.orEmpty(),
             onToggleFavorite = { series -> toggleFavorite("series", series.id, series.title, series.coverUrl) },
             initialDetails = displayedSeries.firstOrNull()?.let { seriesDetailsCache[it.id]?.asCatalogDetails(it) },
-            sortOrder = seriesSortOrder,
-            onSort = { order -> seriesSortOrder = order; showSeries(category, items) }
+            sortOrder = effectiveSort,
+            onSort = if (isFavorites) null else { order -> seriesSortOrder = order; showSeries(category, items) }
         ))
     }
 
@@ -1338,7 +1413,8 @@ class MainActivity : Activity() {
             positionMs = if (isCompleted && duration > 0L) duration else position,
             durationMs = duration,
             updatedAt = System.currentTimeMillis(),
-            completed = isCompleted
+            completed = isCompleted,
+            hiddenFromContinue = false
         )
         progressStore.save(profile, progress)
         if (syncRemote) worker.execute { syncProgressItem(profile, progress) }

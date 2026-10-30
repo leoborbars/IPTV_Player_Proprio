@@ -23,7 +23,7 @@ object LeSilArtworkLoader {
         override fun sizeOf(key: String, value: Bitmap): Int = value.allocationByteCount
     }
 
-    fun into(url: String?, target: ImageView, maxDimension: Int = 900) {
+    fun into(url: String?, target: ImageView, maxDimension: Int = 900, priority: Boolean = false) {
         val key = url?.let { "$it#$maxDimension" }
         if (target.tag == key && target.drawable != null) return
         target.tag = key
@@ -44,11 +44,12 @@ object LeSilArtworkLoader {
                 if (currentTarget.tag == key) currentTarget.setImageBitmap(bitmap)
             }
         }
-        // GridView can recycle dozens of cards during one long D-pad press.
-        // Serve the newest visible cards first and drop obsolete queued work.
-        if (!queue.offerFirst(task)) {
+        // Keep normal cards in row order; the first poster of each row goes to
+        // the front so it cannot starve behind later columns while scrolling.
+        val offered = if (priority) queue.offerFirst(task) else queue.offerLast(task)
+        if (!offered) {
             queue.pollLast()
-            queue.offerFirst(task)
+            if (priority) queue.offerFirst(task) else queue.offerLast(task)
         }
     }
 

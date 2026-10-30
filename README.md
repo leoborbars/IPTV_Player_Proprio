@@ -7,9 +7,9 @@ Aplicativo VOD para Android TV/Google TV e Android, com catálogo Xtream Codes, 
 ## Estado atual
 
 - Home com destaque compacto e fileiras de capas, além do catálogo de filmes com categorias, busca, arte de fundo e navegação por D-pad. Na TV, o painel de categorias desliza sem deslocar o cabeçalho do filme, e a grade mantém o tamanho das capas durante a navegação.
-- Filmes e séries aparecem do mais recente para o mais antigo em todas as categorias, conforme a data/hora informada pelo provedor. Itens sem data ficam ao final. O menu Lançamentos foi removido; as opções de ordenação manual continuam disponíveis.
+- Filmes e séries aparecem do mais recente para o mais antigo nas categorias do provedor, conforme a data/hora informada por ele; itens sem data ficam ao final. Em **Favoritos**, filmes e séries ficam sempre em ordem A–Z. O menu Lançamentos foi removido; as demais categorias mantêm as opções de ordenação manual.
 - Séries usam a mesma grade e navegação dos filmes, com sinopse e número de temporadas da série selecionada. Ao abrir uma série, o app mostra apenas temporadas com episódios, que reproduzem no Media3.
-- Ao iniciar ou selecionar **Atualizar** no menu principal, uma tela de atualização ocupa toda a tela até o catálogo carregar. **Continuar assistindo** permanece na Home.
+- Ao iniciar ou selecionar **Atualizar** no menu principal, uma tela de atualização ocupa toda a tela até o catálogo carregar. **Continuar assistindo** na Home reúne filmes e episódios; segure uma capa por 3 segundos para tirá-la da lista sem marcar o conteúdo como assistido. A fileira **Filmes 4K** foi removida da Home.
 - Player Media3 existente com controles e diagnóstico de reprodução.
 - Progresso local de filmes e episódios. Episódios concluídos aparecem em verde; os em andamento mostram a porcentagem e retomam do ponto salvo.
 - **Favoritos** ficam nas categorias de Filmes e Séries. Segure uma capa por 3 segundos no controle ou na tela para adicionar/remover; a estrela aparece no título da capa.
@@ -140,7 +140,7 @@ Confirme que o dispositivo aparece como `device` antes de instalar. Para o Motor
 
 1. Abra o Le&Sil Stream e configure o servidor Xtream, usuário e senha. Informe o esquema (`https://` ou `http://`) e a porta quando necessário.
 2. Navegue com o controle remoto/D-pad pelo menu lateral e pelas fileiras do catálogo. A disponibilidade de capas, sinopses, backdrops e metadados depende do provedor.
-3. Abra um filme ou episódio para reproduzir no player Media3. O progresso do filme aparece em **Continuar assistindo** na Home; o do episódio aparece na tela de temporadas.
+3. Abra um filme ou episódio para reproduzir no player Media3. Ambos aparecem em **Continuar assistindo** na Home; o progresso do episódio também aparece na tela de temporadas. Para remover um item da Home, mantenha a capa pressionada por 3 segundos. Ao reproduzi-lo novamente e salvar novo progresso, ele volta à lista.
 4. Em **Filmes** ou **Séries → Categorias → Favoritos**, veja os itens salvos. Mantenha **OK** pressionado por 3 segundos sobre uma capa, ou segure o dedo no celular, para adicionar ou remover o favorito.
 5. Use **Atualizar** no menu principal para buscar novamente o catálogo do servidor. Para sincronizar progresso e favoritos entre TV e celular, configure o NAS nos dois dispositivos com o mesmo nome de usuário Xtream, endereço do NAS e token e atualize o serviço no NAS.
 

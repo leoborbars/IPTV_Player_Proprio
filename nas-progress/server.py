@@ -6,6 +6,7 @@ import os
 import re
 import sqlite3
 import time
+from contextlib import closing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -33,9 +34,16 @@ def connect_db():
             duration_ms INTEGER NOT NULL,
             updated_at INTEGER NOT NULL,
             completed INTEGER NOT NULL DEFAULT 0,
+            hidden_from_continue INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (profile_id, media_id)
         )
     """)
+    if "hidden_from_continue" not in {row[1] for row in connection.execute("PRAGMA table_info(progress)")}:
+        try:
+            connection.execute("ALTER TABLE progress ADD COLUMN hidden_from_continue INTEGER NOT NULL DEFAULT 0")
+        except sqlite3.OperationalError as error:
+            if "duplicate column name" not in str(error).lower():
+                raise
     connection.execute("""
         CREATE TABLE IF NOT EXISTS favorites (
             profile_id TEXT NOT NULL,
@@ -87,10 +95,10 @@ class Handler(BaseHTTPRequestHandler):
         if not PROFILE_RE.fullmatch(profile_id):
             self.send_json(400, {"error": "invalid_profile_id"})
             return
-        with connect_db() as db:
+        with closing(connect_db()) as db, db:
             if parsed.path == "/api/v1/progress":
                 rows = db.execute(
-                    "SELECT media_id,title,poster_url,position_ms,duration_ms,updated_at,completed "
+                    "SELECT media_id,title,poster_url,position_ms,duration_ms,updated_at,completed,hidden_from_continue "
                     "FROM progress WHERE profile_id=? ORDER BY updated_at DESC LIMIT 5000",
                     (profile_id,),
                 ).fetchall()
@@ -132,6 +140,7 @@ class Handler(BaseHTTPRequestHandler):
                 position_ms = max(0, min(int(item.get("position_ms", 0)), 7 * 24 * 60 * 60 * 1000))
                 duration_ms = max(0, min(int(item.get("duration_ms", 0)), 7 * 24 * 60 * 60 * 1000))
                 completed = 1 if bool(item.get("completed", False)) else 0
+                hidden_from_continue = 1 if bool(item.get("hidden_from_continue", False)) else 0
             else:
                 media_type = str(item.get("media_type", ""))
                 media_id = int(item.get("media_id", 0))
@@ -142,17 +151,19 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(400, {"error": "invalid_payload"})
             return
 
-        with connect_db() as db:
+        with closing(connect_db()) as db, db:
             if path == "/api/v1/progress":
                 db.execute("""
-                    INSERT INTO progress(profile_id,media_id,title,poster_url,position_ms,duration_ms,updated_at,completed)
-                    VALUES(?,?,?,?,?,?,?,?)
+                    INSERT INTO progress(profile_id,media_id,title,poster_url,position_ms,duration_ms,updated_at,completed,hidden_from_continue)
+                    VALUES(?,?,?,?,?,?,?,?,?)
                     ON CONFLICT(profile_id,media_id) DO UPDATE SET
                         title=excluded.title, poster_url=excluded.poster_url,
                         position_ms=excluded.position_ms, duration_ms=excluded.duration_ms,
-                        updated_at=excluded.updated_at, completed=excluded.completed
+                        updated_at=excluded.updated_at, completed=excluded.completed,
+                        hidden_from_continue=excluded.hidden_from_continue
                     WHERE excluded.updated_at >= progress.updated_at
-                """, (profile_id, media_id, title, poster_url, position_ms, duration_ms, updated_at, completed))
+                """, (profile_id, media_id, title, poster_url, position_ms, duration_ms,
+                      updated_at, completed, hidden_from_continue))
             else:
                 db.execute("""
                     INSERT INTO favorites(profile_id,media_type,media_id,title,poster_url,updated_at,active)

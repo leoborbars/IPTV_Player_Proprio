@@ -66,6 +66,15 @@ curl http://127.0.0.1:8787/health
 
 O banco SQLite cria a tabela de favoritos automaticamente. O volume e os progressos antigos são preservados. Sem essa atualização, os novos APKs ainda guardam os favoritos e episódios localmente, mas o NAS antigo responderá `404` para favoritos e `400` para progresso de episódios.
 
+Após atualizar o app com a remoção de itens de **Continuar assistindo**, envie o `server.py` atual pelo PowerShell e reconstrua o serviço:
+
+```powershell
+scp ".\nas-progress\server.py" pi@192.168.3.47:/home/pi/nas-progress/server.py
+ssh pi@192.168.3.47
+```
+
+No NAS, execute `cd ~/nas-progress && sudo docker compose up -d --build`. A migração adiciona a coluna `hidden_from_continue` ao banco existente sem apagar o progresso; só então a remoção passa a sincronizar entre TV e celular.
+
 ## Configurar o Le&Sil Stream
 
 Há duas formas:

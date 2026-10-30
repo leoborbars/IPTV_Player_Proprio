@@ -57,20 +57,27 @@ data class LeSilHomeData(
     val featuredMovie: CatalogEntry? = null,
     val featuredDetails: MovieDetails? = null,
     val featuredCategory: String? = null,
-    val fourKCategory: CatalogEntry? = null,
-    val fourKMovies: List<CatalogEntry> = emptyList(),
     val recentMovies: List<CatalogEntry> = emptyList(),
-    val continueWatching: List<CatalogEntry> = emptyList(),
+    val continueWatching: List<ContinueWatchingItem> = emptyList(),
     val featuredSeries: List<SeriesEntry> = emptyList(),
     val loading: Boolean = false,
     val errorMessage: String? = null,
     val errorActionLabel: String = "Tentar novamente"
 )
 
+data class ContinueWatchingItem(
+    val mediaId: String,
+    val title: String,
+    val posterUrl: String?,
+    val rating: String? = null
+)
+
 data class LeSilHomeActions(
     val onNavigate: (String) -> Unit,
     val onRetry: () -> Unit,
     val onPlay: (CatalogEntry) -> Unit,
+    val onContinueOpen: (String) -> Unit,
+    val onContinueRemove: (String) -> Unit,
     val onMovieDetails: (CatalogEntry) -> Unit,
     val onMovieCategory: (CatalogEntry) -> Unit,
     val onMovieFocus: (CatalogEntry, (MovieDetails?) -> Unit) -> Unit,
@@ -100,13 +107,7 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
             content.addView(statePanel(data.errorMessage, data.errorActionLabel, actions.onRetry))
         } else {
             if (data.continueWatching.isNotEmpty()) {
-                content.addView(movieRow("Continuar assistindo", data.continueWatching) { actions.onPlay(it) })
-            }
-            val fourK = data.fourKCategory
-            if (fourK != null) {
-                content.addView(movieRow("Filmes 4K", data.fourKMovies) { actions.onMovieDetails(it) })
-            } else {
-                content.addView(infoSection("Filmes 4K", "Categoria 4K não identificada pelo nome no catálogo."))
+                content.addView(continueRow(data.continueWatching))
             }
             content.addView(movieRow("Adicionados recentemente", data.recentMovies) { actions.onMovieDetails(it) })
             content.addView(seriesRow(data.featuredSeries))
@@ -343,10 +344,26 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
                 val movie = visibleMovies.getOrNull(first + index) ?: continue
                 val poster = (grid.getChildAt(index) as? ViewGroup)?.getChildAt(0) as? ImageView ?: continue
                 if (poster.drawable == null && !movie.posterUrl.isNullOrBlank()) {
-                    LeSilArtworkLoader.into(movie.posterUrl, poster, 420)
+                    LeSilArtworkLoader.into(movie.posterUrl, poster, 420,
+                        priority = (first + index) % GRID_COLUMNS == 0)
                 }
             }
         }
+        val refreshAfterScroll = Runnable { refreshVisiblePosters() }
+        grid.setOnScrollListener(object : AbsListView.OnScrollListener {
+            override fun onScrollStateChanged(view: AbsListView, scrollState: Int) {
+                if (scrollState == AbsListView.OnScrollListener.SCROLL_STATE_IDLE) {
+                    grid.removeCallbacks(refreshAfterScroll)
+                    grid.postDelayed(refreshAfterScroll, 300)
+                }
+            }
+
+            override fun onScroll(view: AbsListView, firstVisibleItem: Int,
+                                  visibleItemCount: Int, totalItemCount: Int) {
+                grid.removeCallbacks(refreshAfterScroll)
+                grid.postDelayed(refreshAfterScroll, 300)
+            }
+        })
         fun focusMovie(movie: CatalogEntry, position: Int, total: Int) {
             focusRequestGeneration++
             focusedMoviePosition = position - 1
@@ -535,6 +552,12 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
                 }
             }
             grid.invalidateViews()
+            // GridView may use a throwaway first-column tile while measuring a
+            // new row. Refresh the attached posters even when focus remains in
+            // Categories and no movie focus callback has fired yet.
+            val refreshRequest = ++posterRefreshGeneration
+            grid.postDelayed({ if (refreshRequest == posterRefreshGeneration) refreshVisiblePosters() }, 350)
+            grid.postDelayed({ if (refreshRequest == posterRefreshGeneration) refreshVisiblePosters() }, 2200)
         }
         searchButton.setOnClickListener {
             lateinit var dialog: AlertDialog
@@ -1652,7 +1675,7 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
         val cardWidth = if (shortScreen) 126 else 144
         val cardHeight = if (shortScreen) 192 else 218
         movies.take(HOME_ROW_LIMIT).forEach { movie ->
-            row.addView(mediaCard(movie.title, movie.posterUrl, movie.rating) { onMovie(movie) },
+            row.addView(mediaCard(movie.title, movie.posterUrl, movie.rating, onClick = { onMovie(movie) }),
                 LinearLayout.LayoutParams(dp(cardWidth), dp(cardHeight)).apply { marginEnd = dp(10) })
         }
         val horizontal = HorizontalScrollView(context).apply {
@@ -1661,6 +1684,37 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
             addView(row)
         }
         section.addView(horizontal)
+        return section
+    }
+
+    private fun continueRow(items: List<ContinueWatchingItem>): View {
+        val section = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+        val heading = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        heading.addView(sectionTitle("Continuar assistindo"), LinearLayout.LayoutParams(0, -2, 1f))
+        heading.addView(TextView(context).apply {
+            text = "Segure 3 s para remover"
+            textSize = if (shortScreen) 10f else 12f
+            setTextColor(SECONDARY)
+            setPadding(0, dp(14), dp(4), dp(8))
+        })
+        section.addView(heading)
+        val row = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+        val cardWidth = if (shortScreen) 126 else 144
+        val cardHeight = if (shortScreen) 192 else 218
+        items.take(HOME_ROW_LIMIT).forEach { item ->
+            row.addView(mediaCard(item.title, item.posterUrl, item.rating,
+                { actions.onContinueOpen(item.mediaId) },
+                { actions.onContinueRemove(item.mediaId) }),
+                LinearLayout.LayoutParams(dp(cardWidth), dp(cardHeight)).apply { marginEnd = dp(10) })
+        }
+        section.addView(HorizontalScrollView(context).apply {
+            isHorizontalScrollBarEnabled = false
+            isFocusable = false
+            addView(row)
+        })
         return section
     }
 
@@ -1675,7 +1729,8 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
         val cardWidth = if (shortScreen) 126 else 144
         val cardHeight = if (shortScreen) 192 else 218
         series.take(HOME_ROW_LIMIT).forEach { item ->
-            row.addView(mediaCard(item.title, item.coverUrl, item.rating) { actions.onSeriesDetails(item) },
+            row.addView(mediaCard(item.title, item.coverUrl, item.rating,
+                onClick = { actions.onSeriesDetails(item) }),
                 LinearLayout.LayoutParams(dp(cardWidth), dp(cardHeight)).apply { marginEnd = dp(10) })
         }
         section.addView(HorizontalScrollView(context).apply {
@@ -1699,7 +1754,15 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
         }
     }
 
-    private fun mediaCard(title: String, imageUrl: String?, rating: String?, onClick: () -> Unit): View {
+    private fun mediaCard(title: String, imageUrl: String?, rating: String?,
+                          onClick: () -> Unit, onHold: (() -> Unit)? = null): View {
+        var holdRequest: Runnable? = null
+        var holdTriggered = false
+        var holdTarget: View? = null
+        fun cancelHold() {
+            holdRequest?.let { request -> holdTarget?.removeCallbacks(request) }
+            holdRequest = null
+        }
         val card = FrameLayout(context).apply {
             background = rounded(CARD_SURFACE, 0xFF334961.toInt(), 12)
             isFocusable = true
@@ -1707,11 +1770,64 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
             clipToOutline = true
             setOnClickListener { onClick() }
             setOnFocusChangeListener { view, focused ->
+                if (!focused) cancelHold()
                 view.background = rounded(if (focused) 0xFF10263A.toInt() else CARD_SURFACE,
                     if (focused) CYAN else 0xFF334961.toInt(), if (focused) 12 else 10)
                 view.animate().scaleX(if (focused) 1.045f else 1f).scaleY(if (focused) 1.045f else 1f)
                     .setDuration(150).start()
                 view.elevation = if (focused) dp(8).toFloat() else 0f
+            }
+        }
+        holdTarget = card
+        if (onHold != null) {
+            fun startHold() {
+                cancelHold()
+                holdTriggered = false
+                val request = Runnable {
+                    if (card.isAttachedToWindow) {
+                        holdTriggered = true
+                        card.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+                        onHold()
+                    }
+                }
+                holdRequest = request
+                card.postDelayed(request, 3000)
+            }
+            card.setOnKeyListener { _, keyCode, event ->
+                if (keyCode != KeyEvent.KEYCODE_DPAD_CENTER && keyCode != KeyEvent.KEYCODE_ENTER &&
+                    keyCode != KeyEvent.KEYCODE_NUMPAD_ENTER) return@setOnKeyListener false
+                when (event.action) {
+                    KeyEvent.ACTION_DOWN -> {
+                        if (event.repeatCount == 0) startHold()
+                        else return@setOnKeyListener true
+                    }
+                    KeyEvent.ACTION_UP -> {
+                        cancelHold()
+                        if (holdTriggered) { holdTriggered = false; return@setOnKeyListener true }
+                    }
+                }
+                false
+            }
+            var downX = 0f
+            var downY = 0f
+            card.setOnTouchListener { _, event ->
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        downX = event.x; downY = event.y
+                        startHold()
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        val slop = ViewConfiguration.get(context).scaledTouchSlop
+                        if (kotlin.math.abs(event.x - downX) > slop ||
+                            kotlin.math.abs(event.y - downY) > slop) cancelHold()
+                    }
+                    MotionEvent.ACTION_UP -> {
+                        cancelHold()
+                        if (holdTriggered) { holdTriggered = false; return@setOnTouchListener true }
+                    }
+                    MotionEvent.ACTION_CANCEL -> cancelHold()
+                }
+                false
             }
         }
         val image = ImageView(context).apply { scaleType = ImageView.ScaleType.CENTER_CROP }
@@ -1780,7 +1896,6 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
             background = rounded(0xFF0D1A27.toInt(), 0xFF263A4E.toInt(), 8)
             clipToOutline = true
         }
-        LeSilArtworkLoader.into(imageUrl, poster, 420)
         tile.addView(poster, LinearLayout.LayoutParams(-1, dp(CATALOG_POSTER_HEIGHT_DP)))
         val caption = TextView(context).apply {
             text = title
@@ -1810,7 +1925,8 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
     ) {
         val poster = tile.getChildAt(0) as? ImageView ?: return
         val caption = tile.getChildAt(1) as? TextView ?: return
-        LeSilArtworkLoader.into(movie.posterUrl, poster, 420)
+        LeSilArtworkLoader.into(movie.posterUrl, poster, 420,
+            priority = (position - 1) % GRID_COLUMNS == 0)
         caption.isSelected = false
         caption.text = favoriteCaption(movie.title, isFavorite)
         caption.contentDescription = if (!movie.rating.isNullOrBlank() && movie.rating != "0") {
@@ -1862,7 +1978,8 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
     private fun refreshFocusedPoster(tile: View, imageUrl: String?) {
         val poster = (tile as? ViewGroup)?.getChildAt(0) as? ImageView ?: return
         if (poster.drawable == null && !imageUrl.isNullOrBlank()) {
-            LeSilArtworkLoader.into(imageUrl, poster, 420)
+            LeSilArtworkLoader.into(imageUrl, poster, 420,
+                priority = tile.tag == CATALOG_LEFT_EDGE_TAG)
         }
     }
 

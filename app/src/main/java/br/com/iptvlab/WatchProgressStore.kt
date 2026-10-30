@@ -11,7 +11,8 @@ data class WatchProgress(
     val positionMs: Long,
     val durationMs: Long,
     val updatedAt: Long,
-    val completed: Boolean = false
+    val completed: Boolean = false,
+    val hiddenFromContinue: Boolean = false
 )
 
 /** Local progress remains available when the NAS cannot be reached. */
@@ -29,7 +30,8 @@ class WatchProgressStore(context: Context) {
         .sortedByDescending { it.updatedAt }
         .toList()
 
-    fun list(profileId: String): List<WatchProgress> = all(profileId).filterNot { it.completed }
+    fun list(profileId: String): List<WatchProgress> = all(profileId)
+        .filterNot { it.completed || it.hiddenFromContinue }
 
     @Synchronized
     fun save(profileId: String, progress: WatchProgress) {
@@ -41,7 +43,8 @@ class WatchProgressStore(context: Context) {
         val editor = preferences.edit()
         remote.forEach { item ->
             val current = get(profileId, item.mediaId)
-            if (current == null || item.updatedAt > current.updatedAt) {
+            if (current == null || item.updatedAt > current.updatedAt ||
+                (item.updatedAt == current.updatedAt && item.hiddenFromContinue && !current.hiddenFromContinue)) {
                 editor.putString(key(profileId, item.mediaId), encode(item))
             }
         }
@@ -58,6 +61,7 @@ class WatchProgressStore(context: Context) {
         .put("duration_ms", item.durationMs)
         .put("updated_at", item.updatedAt)
         .put("completed", item.completed)
+        .put("hidden_from_continue", item.hiddenFromContinue)
         .toString()
 
     private fun decode(value: String?): WatchProgress? = runCatching {
@@ -69,7 +73,8 @@ class WatchProgressStore(context: Context) {
             positionMs = json.optLong("position_ms").coerceAtLeast(0),
             durationMs = json.optLong("duration_ms").coerceAtLeast(0),
             updatedAt = json.optLong("updated_at").coerceAtLeast(0),
-            completed = json.optBoolean("completed", false)
+            completed = json.optBoolean("completed", false),
+            hiddenFromContinue = json.optBoolean("hidden_from_continue", false)
         )
     }.getOrNull()
 
