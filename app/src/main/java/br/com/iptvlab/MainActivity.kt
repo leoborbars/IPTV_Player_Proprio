@@ -24,10 +24,12 @@ import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.GridView
+import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import android.view.ViewGroup
 import androidx.annotation.OptIn
 import androidx.media3.common.C
 import androidx.media3.common.Format
@@ -44,6 +46,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.AspectRatioFrameLayout
+import androidx.media3.ui.DefaultTimeBar
 import androidx.media3.ui.PlayerView
 import androidx.media3.ui.TrackSelectionDialogBuilder
 import java.util.concurrent.Executors
@@ -104,6 +107,11 @@ class MainActivity : Activity() {
     private var returnFromPlayer: (() -> Unit)? = null
     private var player: ExoPlayer? = null
     private var playerView: PlayerView? = null
+    private var playerPrimaryControl: View? = null
+    private var playerTransportControls: List<View> = emptyList()
+    private var playerSeekBar: DefaultTimeBar? = null
+    private var playerControlsVisible = false
+    private var playerShowOnSelect = false
     private var diagnosticView: TextView? = null
     private var diagnosticPanel: LinearLayout? = null
     private var playerActionDock: LinearLayout? = null
@@ -205,6 +213,33 @@ class MainActivity : Activity() {
         }
         setPlayerButtonBackground(false)
         setOnFocusChangeListener { _, focused -> setPlayerButtonBackground(focused) }
+        setOnClickListener { action() }
+    }
+    private fun playerTransportButton(iconRes: Int, title: String,
+                                      hint: TextView, action: () -> Unit) = ImageButton(this).apply {
+        id = View.generateViewId()
+        setImageResource(iconRes)
+        imageTintList = ColorStateList.valueOf(Color.WHITE)
+        scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
+        contentDescription = title
+        setPadding(dp(15), dp(15), dp(15), dp(15))
+        isFocusable = true
+        isClickable = true
+        layoutParams = LinearLayout.LayoutParams(dp(58), dp(58))
+        fun paint(focused: Boolean) {
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(if (focused) Color.rgb(18, 91, 124) else Color.argb(165, 17, 30, 46))
+                setStroke(dp(if (focused) 2 else 1),
+                    if (focused) Color.rgb(72, 206, 246) else Color.argb(115, 129, 174, 202))
+            }
+        }
+        paint(false)
+        setOnFocusChangeListener { _, focused ->
+            paint(focused)
+            hint.text = if (focused) title else ""
+            hint.visibility = if (focused) View.VISIBLE else View.GONE
+        }
         setOnClickListener { action() }
     }
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -1173,7 +1208,12 @@ class MainActivity : Activity() {
     private fun playMovie(movie: CatalogEntry, returnTo: () -> Unit = { showHome() }) {
         val c = client ?: return
         val url = try { c.movieUrl(movie) } catch (e: Exception) { msg("Formato de arquivo não reconhecido"); return }
-        playMedia(movie, url, movie.id.toString(), { openMovieCast(movie) }, returnTo)
+        val playbackList = if (movies.any { it.id == movie.id }) sortMovies(movies, movieSortOrder)
+            else allMovies
+        val movieIndex = playbackList.indexOfFirst { it.id == movie.id }
+        val nextMovie = if (movieIndex >= 0) playbackList.getOrNull(movieIndex + 1) else null
+        playMedia(movie, url, movie.id.toString(), { openMovieCast(movie) }, returnTo,
+            nextMovie?.let { next -> { playMovie(next, returnTo) } })
     }
 
     private fun playEpisode(series: SeriesEntry, details: SeriesDetails, episode: EpisodeEntry) {
@@ -1187,15 +1227,20 @@ class MainActivity : Activity() {
             extension = episode.extension,
             posterUrl = episode.imageUrl ?: details.coverUrl ?: series.coverUrl,
             categoryId = series.categoryId)
+        val episodes = details.seasons.flatMap { it.episodes }
+        val episodeIndex = episodes.indexOfFirst { it.id == episode.id }
+        val nextEpisode = if (episodeIndex >= 0) episodes.getOrNull(episodeIndex + 1) else null
         playMedia(entry, url, "episode:${episode.id}", {
             AlertDialog.Builder(this).setTitle(series.title)
                 .setMessage(details.cast?.takeIf { it.isNotBlank() } ?: "Elenco não informado pelo servidor.")
                 .setPositiveButton("Fechar", null).show()
-        }) { showSeriesSeasons(series, details) }
+        }, { showSeriesSeasons(series, details) },
+            nextEpisode?.let { next -> { playEpisode(series, details, next) } })
     }
 
     private fun playMedia(movie: CatalogEntry, url: String, progressId: String,
-                          showCast: () -> Unit, returnTo: () -> Unit) {
+                          showCast: () -> Unit, returnTo: () -> Unit,
+                          playNext: (() -> Unit)? = null) {
         stopPlayer()
         currentPlayingMovie = movie
         currentPlayingProgressId = progressId
@@ -1220,16 +1265,113 @@ class MainActivity : Activity() {
     setControllerAutoShow(false)
     setControllerHideOnTouch(true)
     setControllerShowTimeoutMs(4500)
-    setControllerAnimationEnabled(true)
+    setControllerAnimationEnabled(false)
             resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
             setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING)
         }
     playerView = pv
+    playerControlsVisible = false
+    playerShowOnSelect = false
     setAppImmersive()
         root.setBackgroundColor(Color.BLACK)
         root.removeAllViews()
         root.addView(pv, FrameLayout.LayoutParams(-1, -1))
         pv.findViewById<View>(androidx.media3.ui.R.id.exo_settings)?.visibility = View.GONE
+
+        val controlHint = label("", 14f).apply {
+            gravity = Gravity.CENTER
+            setTextColor(Color.WHITE)
+            setPadding(dp(18), dp(6), dp(18), dp(6))
+            background = GradientDrawable().apply {
+                setColor(Color.argb(210, 7, 14, 27))
+                cornerRadius = dp(12).toFloat()
+            }
+            visibility = View.GONE
+        }
+        root.addView(controlHint, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
+        controlHint.translationY = -dp(86).toFloat()
+        pv.setShowPreviousButton(false)
+        pv.setShowNextButton(false)
+        val rewindButton = pv.findViewById<View>(androidx.media3.ui.R.id.exo_rew_with_amount)
+        val playPauseButton = pv.findViewById<View>(androidx.media3.ui.R.id.exo_play_pause)
+        val forwardButton = pv.findViewById<View>(androidx.media3.ui.R.id.exo_ffwd_with_amount)
+        pv.findViewById<LinearLayout>(androidx.media3.ui.R.id.exo_center_controls)?.let { controls ->
+            val restartButton = playerTransportButton(R.drawable.ic_player_restart,
+                "Reiniciar", controlHint) {
+                exo.seekTo(0L)
+                pv.showController()
+            }
+            val nextButton = playerTransportButton(android.R.drawable.ic_media_next,
+                "Próximo", controlHint) {
+                if (playNext != null) playNext() else {
+                    msg("Não há próximo vídeo")
+                    pv.showController()
+                }
+            }
+            controls.addView(restartButton, 0)
+            controls.addView(nextButton)
+            playerPrimaryControl = playPauseButton ?: restartButton
+            val ordered = listOfNotNull(restartButton, rewindButton, playPauseButton,
+                forwardButton, nextButton)
+            playerTransportControls = ordered
+            ordered.forEachIndexed { index, view ->
+                if (index > 0) view.nextFocusLeftId = ordered[index - 1].id
+                if (index < ordered.lastIndex) view.nextFocusRightId = ordered[index + 1].id
+            }
+            forwardButton?.setOnKeyListener { _, keyCode, event ->
+                if (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT && event.action == KeyEvent.ACTION_DOWN) {
+                    nextButton.requestFocus()
+                    true
+                } else false
+            }
+            listOfNotNull(rewindButton to "Voltar 5 s", playPauseButton to "Pausar",
+                forwardButton to "Avançar 15 s").forEach { (view, name) ->
+                view?.setOnFocusChangeListener { _, focused ->
+                    controlHint.text = if (focused && view === playPauseButton && !exo.isPlaying)
+                        "Reproduzir" else if (focused) name else ""
+                    controlHint.visibility = if (focused) View.VISIBLE else View.GONE
+                }
+            }
+        }
+        val positionText = pv.findViewById<TextView>(androidx.media3.ui.R.id.exo_position)
+        val durationText = pv.findViewById<TextView>(androidx.media3.ui.R.id.exo_duration)
+        val timeContainer = pv.findViewById<ViewGroup>(androidx.media3.ui.R.id.exo_time)
+        val timeRow = if (positionText != null && durationText != null && timeContainer != null) {
+            timeContainer.removeView(positionText)
+            timeContainer.removeView(durationText)
+            timeContainer.visibility = View.GONE
+            LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                visibility = View.GONE
+                positionText.setTextColor(Color.WHITE)
+                durationText.setTextColor(Color.WHITE)
+                addView(positionText, LinearLayout.LayoutParams(-2, -2))
+                addView(View(this@MainActivity), LinearLayout.LayoutParams(0, 1, 1f))
+                addView(durationText, LinearLayout.LayoutParams(-2, -2))
+                root.addView(this, FrameLayout.LayoutParams(-1, dp(28), Gravity.BOTTOM).apply {
+                    bottomMargin = dp(62)
+                    marginStart = dp(20)
+                    marginEnd = dp(20)
+                })
+            }
+        } else null
+        val progressBar = pv.findViewById<DefaultTimeBar>(androidx.media3.ui.R.id.exo_progress)
+        playerSeekBar = progressBar
+        progressBar?.apply {
+            setKeyTimeIncrement(5_000L)
+            isFocusable = true
+            nextFocusUpId = playPauseButton?.id ?: View.NO_ID
+            listOfNotNull(rewindButton, playPauseButton, forwardButton).forEach { control ->
+                control.nextFocusDownId = id
+            }
+            (layoutParams as? FrameLayout.LayoutParams)?.let { params ->
+                params.marginStart = dp(96)
+                params.marginEnd = dp(96)
+                layoutParams = params
+            }
+            visibility = View.GONE
+        }
         val info = label("Carregando dados técnicos...", 16f).apply {
             setBackgroundColor(Color.argb(215, 5, 12, 20))
             setPadding(dp(15), dp(12), dp(15), dp(12))
@@ -1301,8 +1443,12 @@ class MainActivity : Activity() {
     dock.addView(playerControlButton("↩", "Sair") { leavePlayer() })
     pv.setControllerVisibilityListener(PlayerView.ControllerVisibilityListener { visibility ->
       val controlsVisible = visibility == View.VISIBLE
+      playerControlsVisible = controlsVisible
       dock.visibility = if (controlsVisible) View.VISIBLE else View.GONE
+      timeRow?.visibility = if (controlsVisible) View.VISIBLE else View.GONE
+      progressBar?.visibility = if (controlsVisible) View.VISIBLE else View.GONE
       if (!controlsVisible) {
+        controlHint.visibility = View.GONE
         diagnosticsVisible = false
         diagnosticPanel?.visibility = View.GONE
       }
@@ -1427,6 +1573,11 @@ class MainActivity : Activity() {
         uiHandler.removeCallbacks(saveProgressTick)
         playerView?.player = null
         playerView = null
+        playerPrimaryControl = null
+        playerTransportControls = emptyList()
+        playerSeekBar = null
+        playerControlsVisible = false
+        playerShowOnSelect = false
         player?.release()
         player = null
         currentPlayingMovie = null
@@ -1453,6 +1604,25 @@ class MainActivity : Activity() {
         if (!::root.isInitialized) return super.dispatchKeyEvent(event)
         val selectKey = event.keyCode == KeyEvent.KEYCODE_DPAD_CENTER ||
             event.keyCode == KeyEvent.KEYCODE_ENTER || event.keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER
+        if (player != null) {
+            if (playerControlsVisible && event.action == KeyEvent.ACTION_DOWN &&
+                event.keyCode == KeyEvent.KEYCODE_DPAD_DOWN &&
+                playerTransportControls.contains(root.findFocus()) &&
+                playerSeekBar?.requestFocus() == true) return true
+            if (playerShowOnSelect && selectKey) {
+                if (event.action == KeyEvent.ACTION_UP) playerShowOnSelect = false
+                return true
+            }
+            if (!playerControlsVisible && selectKey) {
+                if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+                    playerShowOnSelect = true
+                    playerView?.showController()
+                    playerView?.post { playerPrimaryControl?.requestFocus() }
+                }
+                return true
+            }
+            if (!playerControlsVisible && event.keyCode == KeyEvent.KEYCODE_DPAD_UP) return true
+        }
         if (!selectKey) {
             if (event.action == KeyEvent.ACTION_DOWN) cancelFavoriteHold()
             return super.dispatchKeyEvent(event)

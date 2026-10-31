@@ -1652,12 +1652,7 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
             movie?.let(actions.onPlay) ?: actions.onRetry()
         }
         play.textSize = 13f
-        actionsRow.addView(play, LinearLayout.LayoutParams(dp(116), dp(42)).apply { marginEnd = dp(8) })
-        if (movie != null) {
-            actionsRow.addView(actionButton("ⓘ   Detalhes", false) { actions.onMovieDetails(movie) }.apply {
-                textSize = 13f
-            }, LinearLayout.LayoutParams(dp(112), dp(42)))
-        }
+        actionsRow.addView(play, LinearLayout.LayoutParams(dp(116), dp(42)))
         textBlock.addView(actionsRow)
         frame.addView(textBlock, FrameLayout.LayoutParams(
             dp((screenWidthDp * 0.57f).toInt().coerceAtLeast(240)), -1, Gravity.START))
