@@ -78,7 +78,6 @@ data class ContinueWatchingItem(
 data class LeSilHomeActions(
     val onNavigate: (String) -> Unit,
     val onRetry: () -> Unit,
-    val onPlay: (CatalogEntry) -> Unit,
     val onContinueOpen: (String) -> Unit,
     val onContinueRemove: (String) -> Unit,
     val onMovieDetails: (CatalogEntry) -> Unit,
@@ -1707,13 +1706,6 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
             })
         }
 
-        val actionsRow = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        val play = actionButton("▶   Assistir", true) {
-            movie?.let(actions.onPlay) ?: actions.onRetry()
-        }
-        play.textSize = 13f
-        actionsRow.addView(play, LinearLayout.LayoutParams(dp(116), dp(42)))
-        textBlock.addView(actionsRow)
         frame.addView(textBlock, FrameLayout.LayoutParams(
             dp((screenWidthDp * 0.57f).toInt().coerceAtLeast(240)), -1, Gravity.START))
         return frame.apply { layoutParams = LinearLayout.LayoutParams(-1, height) }

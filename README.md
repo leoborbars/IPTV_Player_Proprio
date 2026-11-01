@@ -6,7 +6,7 @@ Aplicativo VOD para Android TV/Google TV e Android, com catálogo Xtream Codes, 
 
 ## Estado atual
 
-- Home com destaque compacto e fileiras de capas, além do catálogo de filmes com categorias, busca, arte de fundo e navegação por D-pad. Na TV, o painel de categorias desliza sem deslocar o cabeçalho do filme, e a grade mantém o tamanho das capas durante a navegação.
+- Home com destaque compacto, sem botão de reprodução no painel superior, e fileiras de capas para abrir os títulos. O catálogo de filmes tem categorias, busca, arte de fundo e navegação por D-pad. Na TV, o painel de categorias desliza sem deslocar o cabeçalho do filme, e a grade mantém o tamanho das capas durante a navegação.
 - Filmes e séries aparecem do mais recente para o mais antigo nas categorias do provedor, conforme a data/hora informada por ele; itens sem data ficam ao final. Em **Favoritos**, filmes e séries ficam sempre em ordem A–Z. O menu Lançamentos foi removido; as demais categorias mantêm as opções de ordenação manual.
 - Séries usam a mesma grade e navegação dos filmes, com sinopse e número de temporadas da série selecionada. Ao abrir uma série, o app mostra apenas temporadas com episódios, que reproduzem no Media3.
 - Ao iniciar ou selecionar **Atualizar** no menu principal, uma tela de atualização ocupa toda a tela até o catálogo carregar. **Continuar assistindo** na Home reúne filmes e episódios; segure uma capa por 3 segundos para tirá-la da lista sem marcar o conteúdo como assistido. A fileira **Filmes 4K** foi removida da Home.

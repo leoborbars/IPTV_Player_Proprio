@@ -140,7 +140,6 @@ class MainActivity : Activity() {
         LeSilHomeScreen(this, LeSilHomeActions(
             onNavigate = ::navigate,
             onRetry = ::retryCatalog,
-            onPlay = { movie -> playMovie(movie) { showHome() } },
             onContinueOpen = ::openContinueItem,
             onContinueRemove = ::removeContinueItem,
             onMovieDetails = { movie -> openMovieDetails(movie) { showHome() } },
