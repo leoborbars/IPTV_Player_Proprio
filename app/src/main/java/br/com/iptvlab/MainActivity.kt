@@ -49,6 +49,10 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.DefaultTimeBar
 import androidx.media3.ui.PlayerView
 import androidx.media3.ui.TrackSelectionDialogBuilder
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 import java.util.concurrent.Executors
 
 @OptIn(UnstableApi::class)
@@ -64,6 +68,7 @@ class MainActivity : Activity() {
     private var activeProfileId: String? = null
     private var currentPlayingMovie: CatalogEntry? = null
     private var currentPlayingProgressId: String? = null
+    private var currentPlaybackCompleted = false
     private var lastProgressSyncAt = 0L
     private var movieCategories: List<CatalogEntry> = emptyList()
     private var seriesCategories: List<CatalogEntry> = emptyList()
@@ -428,6 +433,7 @@ class MainActivity : Activity() {
         featuredDetails = featuredDetails,
         featuredCategory = featuredCategoryName,
         recentMovies = recentMovies,
+        movieProgress = savedMovieProgress(),
         continueWatching = continueItems(),
         featuredSeries = featuredSeries,
         loading = homeLoading,
@@ -460,6 +466,7 @@ class MainActivity : Activity() {
             "Configurações" -> {
                 showSettings()
             }
+            "Sobre" -> showAbout()
         }
     }
 
@@ -474,17 +481,25 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun savedMovieProgress(): Map<Int, WatchProgress> {
+        val profile = activeProfileId ?: return emptyMap()
+        return progressStore.all(profile).mapNotNull { progress ->
+            progress.mediaId.toIntOrNull()?.let { it to progress }
+        }.toMap()
+    }
+
     private fun continueItems(): List<ContinueWatchingItem> {
         val profile = activeProfileId ?: return emptyList()
         val catalogById = allMovies.associateBy { it.id }
         return progressStore.list(profile).mapNotNull { progress ->
             if (progress.mediaId.startsWith("episode:")) {
-                ContinueWatchingItem(progress.mediaId, progress.title, progress.posterUrl)
+                ContinueWatchingItem(progress.mediaId, progress.title, progress.posterUrl,
+                    progress = progress)
             } else {
                 val id = progress.mediaId.toIntOrNull() ?: return@mapNotNull null
                 val movie = catalogById[id]
                 ContinueWatchingItem(progress.mediaId, movie?.title ?: progress.title,
-                    progress.posterUrl ?: movie?.posterUrl, movie?.rating)
+                    progress.posterUrl ?: movie?.posterUrl, movie?.rating, progress)
             }
         }
     }
@@ -566,6 +581,7 @@ class MainActivity : Activity() {
             categories = listOf(category),
             selectedCategoryId = category.id,
             movies = entries,
+            movieProgress = savedMovieProgress(),
             initialDetails = entries.firstOrNull()?.let { movieDetailsCache[it.id] },
             initialDetailsMovieId = entries.firstOrNull()?.id,
             onCategory = {},
@@ -593,6 +609,25 @@ class MainActivity : Activity() {
         screen.addView(button("Configurar sincronização NAS") { showNasSyncSettings() })
         screen.addView(button("Voltar") { showHome() })
         replace(ScrollView(this).apply { addView(screen) })
+    }
+
+    private fun showAbout() {
+        activeCatalogSection = null
+        backAction = { showHome() }
+        val buildDate = DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm:ss z", Locale.forLanguageTag("pt-BR"))
+            .withZone(ZoneId.systemDefault())
+            .format(Instant.ofEpochMilli(BuildConfig.BUILD_TIME_MS))
+        val details = listOf(
+            "Projeto" to "IPTV Player Android · Le&Sil Stream",
+            "Versão" to "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
+            "Hash da compilação (fontes)" to BuildConfig.BUILD_HASH,
+            "Revisão Git" to BuildConfig.GIT_REVISION,
+            "Compilado em" to buildDate,
+            "Reprodutor" to "AndroidX Media3 1.11.1",
+            "Dispositivo" to "${Build.MANUFACTURER} ${Build.MODEL} · Android ${Build.VERSION.RELEASE}",
+            "Pacote" to BuildConfig.APPLICATION_ID
+        )
+        replace(leSilUi.aboutScreen(details) { showHome() })
     }
 
     private fun checkNasConnection(statusView: TextView) {
@@ -885,9 +920,15 @@ class MainActivity : Activity() {
             title = categoryName,
             selectedNav = currentMovieNav,
             categories = if (currentMovieNav == "Filmes 4K") listOfNotNull(fourKCategory)
-                else listOf(allMoviesCategory, favoriteMoviesCategory) + movieCategories,
+                else buildList {
+                    add(allMoviesCategory)
+                    add(favoriteMoviesCategory)
+                    fourKCategory?.let { add(it) }
+                    addAll(movieCategories.filterNot { it.id == fourKCategory?.id })
+                },
             selectedCategoryId = selectedMovieCategoryId,
             movies = displayedMovies,
+            movieProgress = savedMovieProgress(),
             initialDetails = displayedMovies.firstOrNull()?.let { movieDetailsCache[it.id] },
             initialDetailsMovieId = displayedMovies.firstOrNull()?.id,
             onCategory = { selectMovieCategory(it, currentMovieNav) },
@@ -1201,8 +1242,11 @@ class MainActivity : Activity() {
         val normalized = java.text.Normalizer.normalize(name.trim(), java.text.Normalizer.Form.NFD)
             .replace(Regex("\\p{Mn}+"), "")
             .lowercase()
+            .replace(Regex("[^a-z0-9]+"), " ")
             .replace(Regex("\\s+"), " ")
-        return normalized == "filmes 4k" || normalized == "filmes uhd"
+            .trim()
+        return normalized == "filmes 4k" || normalized == "filmes uhd" ||
+            normalized == "4k" || normalized == "uhd"
     }
 
     private fun playMovie(movie: CatalogEntry, returnTo: () -> Unit = { showHome() }) {
@@ -1235,16 +1279,25 @@ class MainActivity : Activity() {
                 .setMessage(details.cast?.takeIf { it.isNotBlank() } ?: "Elenco não informado pelo servidor.")
                 .setPositiveButton("Fechar", null).show()
         }, { showSeriesSeasons(series, details) },
-            nextEpisode?.let { next -> { playEpisode(series, details, next) } })
+            nextEpisode?.let { next -> { playEpisode(series, details, next) } },
+            autoPlayNextOnEnd = true,
+            playerTitle = series.title,
+            playerSubtitle = "Temporada: ${episode.seasonNumber} | Episódio: ${episode.number}")
     }
 
     private fun playMedia(movie: CatalogEntry, url: String, progressId: String,
                           showCast: () -> Unit, returnTo: () -> Unit,
-                          playNext: (() -> Unit)? = null) {
+                          playNext: (() -> Unit)? = null,
+                          autoPlayNextOnEnd: Boolean = false,
+                          playerTitle: String = movie.title,
+                          playerSubtitle: String? = null) {
         stopPlayer()
         currentPlayingMovie = movie
         currentPlayingProgressId = progressId
+        currentPlaybackCompleted = false
         returnFromPlayer = returnTo
+        val existingProgress = activeProfileId?.let { progressStore.get(it, progressId) }
+        var rewatchPending = existingProgress?.completed == true
         videoDecoder = "aguardando"; audioDecoder = "aguardando"
         droppedFrames = 0; bufferingEvents = 0; latestError = "nenhum"
         val httpDataSourceFactory = DefaultHttpDataSource.Factory()
@@ -1278,6 +1331,30 @@ class MainActivity : Activity() {
         root.addView(pv, FrameLayout.LayoutParams(-1, -1))
         pv.findViewById<View>(androidx.media3.ui.R.id.exo_settings)?.visibility = View.GONE
 
+        val playerHeader = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(30), dp(22), dp(30), dp(26))
+            background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
+                intArrayOf(0xD9000000.toInt(), 0x88000000.toInt(), Color.TRANSPARENT))
+            visibility = View.GONE
+            addView(label(playerTitle, 25f).apply {
+                setTextColor(Color.WHITE)
+                setTypeface(typeface, Typeface.BOLD)
+                maxLines = 2
+                ellipsize = android.text.TextUtils.TruncateAt.END
+            })
+            playerSubtitle?.let { subtitle ->
+                addView(label(subtitle, 16f).apply {
+                    setTextColor(0xFFE0E6EF.toInt())
+                    setPadding(0, dp(6), 0, 0)
+                    maxLines = 1
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                })
+            }
+            contentDescription = listOfNotNull(playerTitle, playerSubtitle).joinToString(", ")
+        }
+        root.addView(playerHeader, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
+
         val controlHint = label("", 14f).apply {
             gravity = Gravity.CENTER
             setTextColor(Color.WHITE)
@@ -1298,7 +1375,9 @@ class MainActivity : Activity() {
         pv.findViewById<LinearLayout>(androidx.media3.ui.R.id.exo_center_controls)?.let { controls ->
             val restartButton = playerTransportButton(R.drawable.ic_player_restart,
                 "Reiniciar", controlHint) {
+                if (currentPlaybackCompleted) resetCompletedProgress()
                 exo.seekTo(0L)
+                exo.playWhenReady = true
                 pv.showController()
             }
             val nextButton = playerTransportButton(android.R.drawable.ic_media_next,
@@ -1405,6 +1484,7 @@ class MainActivity : Activity() {
     dock.addView(playerControlButton("ⓘ", "Informação") {
       diagnosticsVisible = !diagnosticsVisible
       diagnosticPanel?.visibility = if (diagnosticsVisible) View.VISIBLE else View.GONE
+      playerHeader.visibility = if (diagnosticsVisible) View.GONE else View.VISIBLE
       pv.showController()
     })
         dock.addView(button("Áudio") { TrackSelectionDialogBuilder(this, "Faixas de áudio", exo, C.TRACK_TYPE_AUDIO).build().show() })
@@ -1426,6 +1506,7 @@ class MainActivity : Activity() {
     dock.addView(playerControlButton("ⓘ", "Informação") {
       diagnosticsVisible = !diagnosticsVisible
       diagnosticPanel?.visibility = if (diagnosticsVisible) View.VISIBLE else View.GONE
+      playerHeader.visibility = if (diagnosticsVisible) View.GONE else View.VISIBLE
       pv.showController()
     })
     dock.addView(playerControlButton("♫", "Áudio") {
@@ -1444,6 +1525,7 @@ class MainActivity : Activity() {
     pv.setControllerVisibilityListener(PlayerView.ControllerVisibilityListener { visibility ->
       val controlsVisible = visibility == View.VISIBLE
       playerControlsVisible = controlsVisible
+      playerHeader.visibility = if (controlsVisible && !diagnosticsVisible) View.VISIBLE else View.GONE
       dock.visibility = if (controlsVisible) View.VISIBLE else View.GONE
       timeRow?.visibility = if (controlsVisible) View.VISIBLE else View.GONE
       progressBar?.visibility = if (controlsVisible) View.VISIBLE else View.GONE
@@ -1455,11 +1537,29 @@ class MainActivity : Activity() {
     })
     pv.hideController()
 
+        var autoAdvanceQueued = false
         exo.addListener(object : Player.Listener {
             override fun onTracksChanged(tracks: Tracks) { updateDiagnostics() }
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                if (isPlaying && rewatchPending) {
+                    rewatchPending = false
+                    resetCompletedProgress()
+                }
+            }
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (playbackState == Player.STATE_BUFFERING) bufferingEvents++
-                if (playbackState == Player.STATE_ENDED) saveCurrentProgress(syncRemote = true, completed = true)
+                if (playbackState == Player.STATE_ENDED) {
+                    currentPlaybackCompleted = true
+                    saveCurrentProgress(syncRemote = true, completed = true)
+                    if (autoPlayNextOnEnd && playNext != null && !autoAdvanceQueued) {
+                        autoAdvanceQueued = true
+                        uiHandler.post {
+                            if (player === exo && currentPlayingProgressId == progressId && !isFinishing) {
+                                playNext()
+                            }
+                        }
+                    }
+                }
                 updateDiagnostics()
             }
             override fun onPlayerError(error: PlaybackException) {
@@ -1496,7 +1596,7 @@ class MainActivity : Activity() {
         val item = MediaItem.Builder().setUri(url).apply {
             if (movie.extension.equals("m3u8", true)) setMimeType(MimeTypes.APPLICATION_M3U8)
         }.build()
-        val savedPosition = activeProfileId?.let { profile -> progressStore.get(profile, progressId) }
+        val savedPosition = existingProgress
             ?.takeIf { !it.completed && it.positionMs > 10_000L }
             ?.positionMs ?: 0L
         exo.setMediaItem(item, savedPosition)
@@ -1550,8 +1650,7 @@ class MainActivity : Activity() {
         val duration = if (rawDuration == C.TIME_UNSET || rawDuration < 0) 0L else rawDuration
         if (!completed && position < 10_000L) return
         val progressId = currentPlayingProgressId ?: movie.id.toString()
-        val isCompleted = completed || progressStore.get(profile, progressId)?.completed == true ||
-            (duration > 0L && position >= (duration - 45_000L).coerceAtLeast(0L))
+        val isCompleted = completed || currentPlaybackCompleted
         val progress = WatchProgress(
             mediaId = progressId,
             title = movie.title,
@@ -1564,6 +1663,18 @@ class MainActivity : Activity() {
         )
         progressStore.save(profile, progress)
         if (syncRemote) worker.execute { syncProgressItem(profile, progress) }
+    }
+
+    private fun resetCompletedProgress() {
+        val profile = activeProfileId ?: return
+        val progressId = currentPlayingProgressId ?: return
+        val previous = progressStore.get(profile, progressId) ?: return
+        if (!previous.completed && !currentPlaybackCompleted) return
+        currentPlaybackCompleted = false
+        val restarted = previous.copy(positionMs = 1L, updatedAt = System.currentTimeMillis(),
+            completed = false, hiddenFromContinue = false)
+        progressStore.save(profile, restarted)
+        worker.execute { syncProgressItem(profile, restarted) }
     }
 
     private fun stopPlayer() {
@@ -1582,6 +1693,7 @@ class MainActivity : Activity() {
         player = null
         currentPlayingMovie = null
         currentPlayingProgressId = null
+        currentPlaybackCompleted = false
         diagnosticView = null
     diagnosticPanel = null
     playerActionDock = null

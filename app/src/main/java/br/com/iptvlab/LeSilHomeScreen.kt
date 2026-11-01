@@ -31,6 +31,7 @@ import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
+import kotlin.math.roundToInt
 
 enum class MovieSortOrder(val label: String, val formatPattern: Regex? = null) {
     TITLE_ASC("Título: A–Z"),
@@ -58,6 +59,7 @@ data class LeSilHomeData(
     val featuredDetails: MovieDetails? = null,
     val featuredCategory: String? = null,
     val recentMovies: List<CatalogEntry> = emptyList(),
+    val movieProgress: Map<Int, WatchProgress> = emptyMap(),
     val continueWatching: List<ContinueWatchingItem> = emptyList(),
     val featuredSeries: List<SeriesEntry> = emptyList(),
     val loading: Boolean = false,
@@ -69,7 +71,8 @@ data class ContinueWatchingItem(
     val mediaId: String,
     val title: String,
     val posterUrl: String?,
-    val rating: String? = null
+    val rating: String? = null,
+    val progress: WatchProgress? = null
 )
 
 data class LeSilHomeActions(
@@ -95,7 +98,17 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
         if (shortScreen) (screenWidthDp * 0.19f).toInt().coerceIn(170, 190)
         else (screenWidthDp * 0.18f).toInt().coerceIn(190, 250)
     )
-    private val categoryPaneWidth = dp((screenWidthDp * 0.23f).toInt().coerceIn(205, 270))
+    private val categoryPaneWidth = dp((screenWidthDp * 0.19f).toInt().coerceIn(175, 225))
+
+    private fun categoryLabel(title: String): String {
+        val original = title.trim()
+        if (original.equals("Todos os filmes", ignoreCase = true)) return "Todos"
+        if (original.equals("Todas as séries", ignoreCase = true)) return "Todas"
+        val cleaned = original.replace(
+            Regex("^(?:filmes|séries|series)\\s*(?:[|:–—-]\\s*)?", RegexOption.IGNORE_CASE), ""
+        ).trim()
+        return cleaned.ifEmpty { original }
+    }
 
     fun home(data: LeSilHomeData): View {
         val content = verticalScroll()
@@ -109,7 +122,9 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
             if (data.continueWatching.isNotEmpty()) {
                 content.addView(continueRow(data.continueWatching))
             }
-            content.addView(movieRow("Adicionados recentemente", data.recentMovies) { actions.onMovieDetails(it) })
+            content.addView(movieRow("Adicionados recentemente", data.recentMovies, data.movieProgress) {
+                actions.onMovieDetails(it)
+            })
             content.addView(seriesRow(data.featuredSeries))
         }
         return shell("Início", content)
@@ -158,7 +173,8 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
             content.addView(stateLabel("Nenhuma categoria foi informada pelo catálogo."))
         } else {
             categories.forEach { category ->
-                val item = actionButton("›   ${category.title}", false) { onCategory(category) }
+                val item = actionButton(categoryLabel(category.title), false) { onCategory(category) }
+                item.contentDescription = category.title
                 item.gravity = Gravity.START or Gravity.CENTER_VERTICAL
                 content.addView(item, LinearLayout.LayoutParams(-1, dp(60)).apply {
                     bottomMargin = dp(8)
@@ -167,6 +183,47 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
             }
         }
         return shell(selectedNav, content)
+    }
+
+    fun aboutScreen(details: List<Pair<String, String>>, onBack: () -> Unit): View {
+        val content = verticalScroll()
+        content.addView(pageTitle("Sobre"))
+        val card = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(22), dp(20), dp(22), dp(20))
+            background = rounded(DARK_SURFACE, BORDER, 14)
+        }
+        val brand = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        brand.addView(ImageView(context).apply {
+            setImageResource(R.drawable.lesil_icon)
+            contentDescription = "Le&Sil Stream"
+        }, LinearLayout.LayoutParams(dp(48), dp(48)).apply { marginEnd = dp(14) })
+        brand.addView(TextView(context).apply {
+            text = "Le&Sil Stream"
+            textSize = 24f
+            typeface = Typeface.create("sans-serif", Typeface.BOLD)
+            setTextColor(WHITE)
+        })
+        card.addView(brand, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(14) })
+        details.forEach { (label, value) ->
+            card.addView(TextView(context).apply {
+                text = label
+                textSize = 13f
+                setTextColor(SECONDARY)
+            }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
+            card.addView(TextView(context).apply {
+                text = value
+                textSize = 16f
+                setTextColor(WHITE)
+            }, LinearLayout.LayoutParams(-1, -2))
+        }
+        content.addView(card, LinearLayout.LayoutParams(-1, -2))
+        content.addView(actionButton("Voltar ao início", false, onBack),
+            LinearLayout.LayoutParams(dp(200), dp(46)).apply { topMargin = dp(14) })
+        return shell("Sobre", content)
     }
 
     fun movieCatalog(
@@ -180,6 +237,7 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
         onCategory: (CatalogEntry) -> Unit,
         onMovie: (CatalogEntry) -> Unit,
         onMovieFocus: (CatalogEntry, (MovieDetails?) -> Unit) -> Unit,
+        movieProgress: Map<Int, WatchProgress> = emptyMap(),
         favoriteIds: Set<Int> = emptySet(),
         onToggleFavorite: ((CatalogEntry) -> Boolean)? = null,
         sortOrder: MovieSortOrder = MovieSortOrder.TITLE_ASC,
@@ -342,7 +400,8 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
             val first = grid.firstVisiblePosition
             for (index in 0 until grid.childCount) {
                 val movie = visibleMovies.getOrNull(first + index) ?: continue
-                val poster = (grid.getChildAt(index) as? ViewGroup)?.getChildAt(0) as? ImageView ?: continue
+                val artwork = (grid.getChildAt(index) as? ViewGroup)?.getChildAt(0) as? FrameLayout ?: continue
+                val poster = artwork.getChildAt(0) as? ImageView ?: continue
                 if (poster.drawable == null && !movie.posterUrl.isNullOrBlank()) {
                     LeSilArtworkLoader.into(movie.posterUrl, poster, 420,
                         priority = (first + index) % GRID_COLUMNS == 0)
@@ -526,7 +585,7 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
                         onFocus = { focused -> if (focused) focusMovie(movie, position + 1, total) }
                     ) as LinearLayout
                     bindCatalogTile(tile, movie, position + 1, total, onMovie, ::focusMovie,
-                        movie.id in currentFavorites)
+                        movie.id in currentFavorites, movieProgress[movie.id])
                     return tile.apply {
                         setTag(R.id.catalog_favorite_set, currentFavorites)
                         id = View.generateViewId()
@@ -801,9 +860,6 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
             val row = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
             val cards = season.episodes.mapIndexed { index, episode ->
                 val progress = episodeProgress[episode.id]
-                val watched = progress?.completed == true
-                val percent = progress?.takeIf { !it.completed && it.durationMs > 0L && it.positionMs > 0L }
-                    ?.let { (it.positionMs * 100L / it.durationMs).coerceIn(1L, 99L).toInt() }
                 val card = LinearLayout(context).apply {
                     id = View.generateViewId()
                     orientation = LinearLayout.VERTICAL
@@ -815,8 +871,8 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
                         view.background = rounded(if (focused) Color.WHITE else 0xFF24272B.toInt(),
                             if (focused) Color.WHITE else Color.TRANSPARENT, 10)
                         (getChildAt(1) as TextView).apply {
-                            setTextColor(if (watched) WHITE else if (focused) 0xFF14171B.toInt() else WHITE)
-                            setBackgroundColor(if (watched) 0xFF23864A.toInt() else if (focused) 0xFFE4E5E6.toInt() else 0xFF24272B.toInt())
+                            setTextColor(if (focused) 0xFF14171B.toInt() else WHITE)
+                            setBackgroundColor(if (focused) 0xFFE4E5E6.toInt() else 0xFF24272B.toInt())
                             ellipsize = if (focused) android.text.TextUtils.TruncateAt.MARQUEE
                                 else android.text.TextUtils.TruncateAt.END
                             isSelected = focused
@@ -824,7 +880,12 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
                         if (focused) position.text = "${index + 1} / ${season.episodes.size}"
                     }
                     setOnClickListener { onEpisode(episode) }
-                    contentDescription = "${season.title}, episódio ${episode.number}: ${episode.title}"
+                    contentDescription = "${season.title}, episódio ${episode.number}: ${episode.title}" +
+                        when {
+                            progress?.completed == true -> ", concluído"
+                            (progress?.positionMs ?: 0L) > 0L -> ", iniciado"
+                            else -> ""
+                        }
                 }
                 val image = ImageView(context).apply {
                     scaleType = ImageView.ScaleType.CENTER_CROP
@@ -833,13 +894,13 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
                 }
                 LeSilArtworkLoader.into(episode.imageUrl ?: season.coverUrl ?: details.backdropUrl
                     ?: details.coverUrl ?: series.coverUrl, image, 600)
-                card.addView(image, LinearLayout.LayoutParams(-1, dp(112)))
+                val artwork = FrameLayout(context).apply {
+                    addView(image, FrameLayout.LayoutParams(-1, -1))
+                    addView(watchProgressBar(progress), FrameLayout.LayoutParams(-1, dp(4), Gravity.BOTTOM))
+                }
+                card.addView(artwork, LinearLayout.LayoutParams(-1, dp(112)))
                 card.addView(TextView(context).apply {
-                    text = when {
-                        watched -> "✓  E${episode.number}. ${episode.title}"
-                        percent != null -> "$percent%  E${episode.number}. ${episode.title}"
-                        else -> "E${episode.number}. ${episode.title}"
-                    }
+                    text = "E${episode.number}. ${episode.title}"
                     textSize = 13f
                     setSingleLine(true)
                     marqueeRepeatLimit = -1
@@ -847,7 +908,6 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
                     gravity = Gravity.CENTER_VERTICAL
                     setPadding(dp(6), 0, dp(6), 0)
                     setTextColor(WHITE)
-                    if (watched) setBackgroundColor(0xFF23864A.toInt())
                 }, LinearLayout.LayoutParams(-1, dp(28)))
                 row.addView(card, LinearLayout.LayoutParams(dp(200), dp(144)).apply { marginEnd = dp(7) })
                 card
@@ -955,7 +1015,7 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
         categories.forEach { category ->
             val selected = category.id == selectedCategoryId
             val item = TextView(context).apply {
-                text = "›   ${category.title}"
+                text = categoryLabel(category.title)
                 textSize = 14f
                 maxLines = 2
                 ellipsize = android.text.TextUtils.TruncateAt.END
@@ -1507,7 +1567,7 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
 
         val menu = listOf(
             "Início" to "⌂", "Filmes" to "◉", "Séries" to "▣",
-            "Atualizar" to "↻", "Configurações" to "⚙"
+            "Atualizar" to "↻", "Configurações" to "⚙", "Sobre" to "ⓘ"
         )
         val menuItems = mutableListOf<Triple<TextView, String, String>>()
         var activeView: View? = null
@@ -1659,7 +1719,8 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
         return frame.apply { layoutParams = LinearLayout.LayoutParams(-1, height) }
     }
 
-    private fun movieRow(title: String, movies: List<CatalogEntry>, onMovie: (CatalogEntry) -> Unit): View {
+    private fun movieRow(title: String, movies: List<CatalogEntry>,
+                         movieProgress: Map<Int, WatchProgress>, onMovie: (CatalogEntry) -> Unit): View {
         val section = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
         section.addView(sectionTitle(title))
         if (movies.isEmpty()) {
@@ -1670,7 +1731,8 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
         val cardWidth = if (shortScreen) 126 else 144
         val cardHeight = if (shortScreen) 192 else 218
         movies.take(HOME_ROW_LIMIT).forEach { movie ->
-            row.addView(mediaCard(movie.title, movie.posterUrl, movie.rating, onClick = { onMovie(movie) }),
+            row.addView(mediaCard(movie.title, movie.posterUrl, movie.rating,
+                onClick = { onMovie(movie) }, progress = movieProgress[movie.id]),
                 LinearLayout.LayoutParams(dp(cardWidth), dp(cardHeight)).apply { marginEnd = dp(10) })
         }
         val horizontal = HorizontalScrollView(context).apply {
@@ -1702,7 +1764,7 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
         items.take(HOME_ROW_LIMIT).forEach { item ->
             row.addView(mediaCard(item.title, item.posterUrl, item.rating,
                 { actions.onContinueOpen(item.mediaId) },
-                { actions.onContinueRemove(item.mediaId) }),
+                { actions.onContinueRemove(item.mediaId) }, item.progress),
                 LinearLayout.LayoutParams(dp(cardWidth), dp(cardHeight)).apply { marginEnd = dp(10) })
         }
         section.addView(HorizontalScrollView(context).apply {
@@ -1750,7 +1812,8 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
     }
 
     private fun mediaCard(title: String, imageUrl: String?, rating: String?,
-                          onClick: () -> Unit, onHold: (() -> Unit)? = null): View {
+                          onClick: () -> Unit, onHold: (() -> Unit)? = null,
+                          progress: WatchProgress? = null): View {
         var holdRequest: Runnable? = null
         var holdTriggered = false
         var holdTarget: View? = null
@@ -1857,8 +1920,32 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
                 rightMargin = dp(8)
             })
         }
+        card.addView(watchProgressBar(progress), FrameLayout.LayoutParams(-1, dp(4), Gravity.BOTTOM))
         card.contentDescription = "Abrir $title"
         return card
+    }
+
+    private fun watchProgressBar(progress: WatchProgress?): View {
+        val fraction = when {
+            progress?.completed == true -> 1f
+            progress != null && progress.positionMs > 0L && progress.durationMs > 0L ->
+                (progress.positionMs.toDouble() / progress.durationMs).toFloat().coerceIn(0f, 0.99f)
+            else -> 0f
+        }
+        return FrameLayout(context).apply {
+            visibility = if (fraction > 0f) View.VISIBLE else View.GONE
+            val fill = View(context).apply {
+                setBackgroundColor(if (progress?.completed == true) 0xFF23864A.toInt() else 0xFF1689F5.toInt())
+            }
+            addView(fill, FrameLayout.LayoutParams(0, -1, Gravity.START))
+            addOnLayoutChangeListener { _, left, _, right, _, _, _, _, _ ->
+                val width = right - left
+                val fillWidth = (width * fraction).roundToInt().coerceAtLeast(dp(3)).coerceAtMost(width)
+                if (fill.layoutParams.width != fillWidth) {
+                    fill.layoutParams = (fill.layoutParams as FrameLayout.LayoutParams).apply { this.width = fillWidth }
+                }
+            }
+        }
     }
 
     private fun catalogTile(
@@ -1891,7 +1978,11 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
             background = rounded(0xFF0D1A27.toInt(), 0xFF263A4E.toInt(), 8)
             clipToOutline = true
         }
-        tile.addView(poster, LinearLayout.LayoutParams(-1, dp(CATALOG_POSTER_HEIGHT_DP)))
+        val artwork = FrameLayout(context).apply {
+            addView(poster, FrameLayout.LayoutParams(-1, -1))
+            addView(watchProgressBar(null), FrameLayout.LayoutParams(-1, dp(4), Gravity.BOTTOM))
+        }
+        tile.addView(artwork, LinearLayout.LayoutParams(-1, dp(CATALOG_POSTER_HEIGHT_DP)))
         val caption = TextView(context).apply {
             text = title
             textSize = 12f
@@ -1916,13 +2007,17 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
         total: Int,
         onMovie: (CatalogEntry) -> Unit,
         onFocus: (CatalogEntry, Int, Int) -> Unit,
-        isFavorite: Boolean
+        isFavorite: Boolean,
+        progress: WatchProgress?
     ) {
-        val poster = tile.getChildAt(0) as? ImageView ?: return
+        val artwork = tile.getChildAt(0) as? FrameLayout ?: return
+        val poster = artwork.getChildAt(0) as? ImageView ?: return
         val caption = tile.getChildAt(1) as? TextView ?: return
         LeSilArtworkLoader.into(movie.posterUrl, poster, 420,
             priority = (position - 1) % GRID_COLUMNS == 0)
         caption.isSelected = false
+        artwork.removeViewAt(1)
+        artwork.addView(watchProgressBar(progress), FrameLayout.LayoutParams(-1, dp(4), Gravity.BOTTOM))
         caption.text = favoriteCaption(movie.title, isFavorite)
         caption.contentDescription = if (!movie.rating.isNullOrBlank() && movie.rating != "0") {
             "${movie.title}, nota informada pelo servidor ${movie.rating}"
@@ -1971,7 +2066,8 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
     }
 
     private fun refreshFocusedPoster(tile: View, imageUrl: String?) {
-        val poster = (tile as? ViewGroup)?.getChildAt(0) as? ImageView ?: return
+        val artwork = (tile as? ViewGroup)?.getChildAt(0) as? FrameLayout ?: return
+        val poster = artwork.getChildAt(0) as? ImageView ?: return
         if (poster.drawable == null && !imageUrl.isNullOrBlank()) {
             LeSilArtworkLoader.into(imageUrl, poster, 420,
                 priority = tile.tag == CATALOG_LEFT_EDGE_TAG)
