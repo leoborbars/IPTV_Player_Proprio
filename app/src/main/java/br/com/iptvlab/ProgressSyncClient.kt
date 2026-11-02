@@ -8,6 +8,31 @@ import java.net.URLEncoder
 
 /** Small LAN-only HTTP client for the self-hosted SQLite progress API. */
 class ProgressSyncClient(private val settings: ProgressSyncSettings) {
+    fun fetchLists(profileId: String): Pair<List<MediaListEntry>, List<MediaListItem>> {
+        val query = URLEncoder.encode(profileId, Charsets.UTF_8.name())
+        val body = JSONObject(request("GET", "/api/v1/lists?profile_id=$query", null))
+        val lists = body.optJSONArray("lists") ?: JSONArray()
+        val items = body.optJSONArray("items") ?: JSONArray()
+        return (0 until lists.length()).mapNotNull { index -> parseList(lists.optJSONObject(index)) } to
+            (0 until items.length()).mapNotNull { index -> parseListItem(items.optJSONObject(index)) }
+    }
+
+    fun upsertList(profileId: String, list: MediaListEntry) {
+        request("PUT", "/api/v1/lists", JSONObject()
+            .put("profile_id", profileId).put("list_id", list.listId)
+            .put("name", list.name).put("updated_at", list.updatedAt)
+            .put("active", list.active))
+    }
+
+    fun upsertListItem(profileId: String, item: MediaListItem) {
+        request("PUT", "/api/v1/list-items", JSONObject()
+            .put("profile_id", profileId).put("list_id", item.listId)
+            .put("media_type", item.mediaType).put("media_id", item.mediaId)
+            .put("title", item.title.take(500)).put("poster_url", item.posterUrl)
+            .put("updated_at", item.updatedAt).put("active", item.active)
+            .put("series_id", item.seriesId))
+    }
+
     fun fetchPlaybackPreferences(profileId: String): PlaybackPreferences? {
         val query = URLEncoder.encode(profileId, Charsets.UTF_8.name())
         val body = JSONObject(request("GET", "/api/v1/playback-preferences?profile_id=$query", null))
@@ -117,6 +142,21 @@ class ProgressSyncClient(private val settings: ProgressSyncSettings) {
             updatedAt = json.optLong("updated_at").coerceAtLeast(0),
             active = storedBoolean(json, "active")
         )
+    }.getOrNull()
+
+    private fun parseList(json: JSONObject?): MediaListEntry? = runCatching {
+        json ?: return null
+        MediaListEntry(json.getString("list_id"), json.getString("name"),
+            json.getLong("updated_at"), storedBoolean(json, "active"))
+    }.getOrNull()
+
+    private fun parseListItem(json: JSONObject?): MediaListItem? = runCatching {
+        json ?: return null
+        MediaListItem(json.getString("list_id"), json.getString("media_type"),
+            json.getInt("media_id"), json.getString("title"),
+            json.optString("poster_url").takeIf { it.isNotBlank() && it != "null" },
+            json.getLong("updated_at"), storedBoolean(json, "active"),
+            if (json.isNull("series_id")) null else json.optInt("series_id"))
     }.getOrNull()
 
     private fun storedBoolean(json: JSONObject, key: String): Boolean = when (val value = json.opt(key)) {

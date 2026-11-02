@@ -15,6 +15,7 @@ DB_PATH = os.environ.get("PROGRESS_DB_PATH", "/data/progress.sqlite3")
 PORT = int(os.environ.get("PORT", "8787"))
 PROFILE_RE = re.compile(r"^[a-f0-9]{64}$")
 MEDIA_RE = re.compile(r"^(?:[0-9]{1,20}|episode:[0-9]{1,20})$")
+LIST_RE = re.compile(r"^(?:leandro|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$")
 
 if len(TOKEN) < 32:
     raise SystemExit("PROGRESS_SYNC_TOKEN precisa ter pelo menos 32 caracteres")
@@ -63,6 +64,39 @@ def connect_db():
             updated_at INTEGER NOT NULL
         )
     """)
+    connection.execute("""
+        CREATE TABLE IF NOT EXISTS media_lists (
+            profile_id TEXT NOT NULL, list_id TEXT NOT NULL, name TEXT NOT NULL,
+            updated_at INTEGER NOT NULL, active INTEGER NOT NULL DEFAULT 1,
+            PRIMARY KEY (profile_id, list_id)
+        )
+    """)
+    connection.execute("""
+        CREATE TABLE IF NOT EXISTS media_list_items (
+            profile_id TEXT NOT NULL, list_id TEXT NOT NULL, media_type TEXT NOT NULL,
+            media_id INTEGER NOT NULL, title TEXT NOT NULL, poster_url TEXT,
+            updated_at INTEGER NOT NULL, active INTEGER NOT NULL DEFAULT 1,
+            series_id INTEGER,
+            PRIMARY KEY (profile_id, list_id, media_type, media_id)
+        )
+    """)
+    if "series_id" not in {row[1] for row in connection.execute("PRAGMA table_info(media_list_items)")}:
+        connection.execute("ALTER TABLE media_list_items ADD COLUMN series_id INTEGER")
+    connection.execute("CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    migrated = connection.execute("SELECT 1 FROM schema_meta WHERE key='favorites_to_leandro'").fetchone()
+    if not migrated:
+        connection.execute("""
+            INSERT OR IGNORE INTO media_lists(profile_id,list_id,name,updated_at,active)
+            SELECT profile_id,'leandro','Leandro',1,1 FROM favorites GROUP BY profile_id
+        """)
+        connection.execute("""
+            INSERT OR IGNORE INTO media_list_items
+                (profile_id,list_id,media_type,media_id,title,poster_url,updated_at,active)
+            SELECT profile_id,'leandro',media_type,media_id,title,poster_url,updated_at,active
+            FROM favorites
+        """)
+        connection.execute("INSERT INTO schema_meta(key,value) VALUES('favorites_to_leandro','1')")
+    connection.commit()
     return connection
 
 
@@ -92,7 +126,7 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/health":
             self.send_json(200, {"status": "ok"})
             return
-        if parsed.path not in ("/api/v1/progress", "/api/v1/favorites", "/api/v1/playback-preferences"):
+        if parsed.path not in ("/api/v1/progress", "/api/v1/favorites", "/api/v1/playback-preferences", "/api/v1/lists"):
             self.send_json(404, {"error": "not_found"})
             return
         if not self.authorized():
@@ -109,6 +143,20 @@ class Handler(BaseHTTPRequestHandler):
                     (profile_id,),
                 ).fetchone()
             self.send_json(200, dict(row) if row else {})
+            return
+        if parsed.path == "/api/v1/lists":
+            with closing(connect_db()) as db:
+                lists = db.execute(
+                    "SELECT list_id,name,updated_at,active FROM media_lists WHERE profile_id=? ORDER BY name LIMIT 500",
+                    (profile_id,),
+                ).fetchall()
+                items = db.execute(
+                    "SELECT list_id,media_type,media_id,title,poster_url,updated_at,active,series_id "
+                    "FROM media_list_items WHERE profile_id=? ORDER BY updated_at DESC LIMIT 20000",
+                    (profile_id,),
+                ).fetchall()
+            self.send_json(200, {"lists": [dict(row) for row in lists],
+                                 "items": [dict(row) for row in items]})
             return
         with closing(connect_db()) as db, db:
             if parsed.path == "/api/v1/progress":
@@ -127,7 +175,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_PUT(self):
         path = urlparse(self.path).path
-        if path not in ("/api/v1/progress", "/api/v1/favorites", "/api/v1/playback-preferences"):
+        if path not in ("/api/v1/progress", "/api/v1/favorites", "/api/v1/playback-preferences",
+                        "/api/v1/lists", "/api/v1/list-items"):
             self.send_json(404, {"error": "not_found"})
             return
         if not self.authorized():
@@ -135,6 +184,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/v1/playback-preferences":
             self.put_playback_preferences()
+            return
+        if path in ("/api/v1/lists", "/api/v1/list-items"):
+            self.put_media_list(path)
             return
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -191,6 +243,88 @@ class Handler(BaseHTTPRequestHandler):
                         updated_at=excluded.updated_at, active=excluded.active
                     WHERE excluded.updated_at >= favorites.updated_at
                 """, (profile_id, media_type, media_id, title, poster_url, updated_at, active))
+                db.execute("""
+                    INSERT INTO media_lists(profile_id,list_id,name,updated_at,active)
+                    VALUES(?,'leandro','Leandro',1,1)
+                    ON CONFLICT(profile_id,list_id) DO NOTHING
+                """, (profile_id,))
+                db.execute("""
+                    INSERT INTO media_list_items(profile_id,list_id,media_type,media_id,title,poster_url,updated_at,active)
+                    VALUES(?,'leandro',?,?,?,?,?,?)
+                    ON CONFLICT(profile_id,list_id,media_type,media_id) DO UPDATE SET
+                        title=excluded.title, poster_url=excluded.poster_url,
+                        updated_at=excluded.updated_at, active=excluded.active
+                    WHERE excluded.updated_at > media_list_items.updated_at
+                """, (profile_id, media_type, media_id, title, poster_url, updated_at, active))
+        self.send_json(200, {"status": "saved"})
+
+    def put_media_list(self, path):
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if not 0 < length <= 16384:
+                raise ValueError("invalid_body_size")
+            item = json.loads(self.rfile.read(length))
+            profile_id = str(item.get("profile_id", ""))
+            list_id = str(item.get("list_id", ""))
+            updated_at = int(item.get("updated_at", 0))
+            active = 1 if bool(item.get("active", False)) else 0
+            if not PROFILE_RE.fullmatch(profile_id) or not LIST_RE.fullmatch(list_id):
+                raise ValueError("invalid_id")
+            if not 0 < updated_at <= int(time.time() * 1000) + 300000:
+                raise ValueError("invalid_timestamp")
+            if path == "/api/v1/lists":
+                name = str(item.get("name", "")).strip()
+                if not name or len(name) > 80 or (list_id == "leandro" and name != "Leandro"):
+                    raise ValueError("invalid_list")
+            else:
+                media_type = str(item.get("media_type", ""))
+                media_id = int(item.get("media_id", 0))
+                title = str(item.get("title", "")).strip()[:500] or "Sem título"
+                poster_url = item.get("poster_url")
+                if poster_url is not None:
+                    poster_url = str(poster_url)[:2048]
+                    if not poster_url.startswith(("http://", "https://")):
+                        poster_url = None
+                if media_type not in ("movie", "series", "episode") or not 0 < media_id <= 2**31 - 1:
+                    raise ValueError("invalid_media")
+                series_id = item.get("series_id")
+                if series_id is not None:
+                    series_id = int(series_id)
+                    if not 0 < series_id <= 2**31 - 1:
+                        raise ValueError("invalid_series_id")
+                if media_type == "episode" and series_id is None:
+                    raise ValueError("missing_series_id")
+        except (ValueError, TypeError, AttributeError, json.JSONDecodeError):
+            self.send_json(400, {"error": "invalid_payload"})
+            return
+        with closing(connect_db()) as db, db:
+            if path == "/api/v1/lists":
+                db.execute("""
+                    INSERT INTO media_lists(profile_id,list_id,name,updated_at,active)
+                    VALUES(?,?,?,?,?)
+                    ON CONFLICT(profile_id,list_id) DO UPDATE SET
+                        name=excluded.name, updated_at=excluded.updated_at, active=excluded.active
+                    WHERE excluded.updated_at >= media_lists.updated_at
+                """, (profile_id, list_id, name, updated_at, active))
+            else:
+                db.execute("""
+                    INSERT INTO media_list_items(profile_id,list_id,media_type,media_id,title,poster_url,updated_at,active,series_id)
+                    VALUES(?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(profile_id,list_id,media_type,media_id) DO UPDATE SET
+                        title=excluded.title, poster_url=excluded.poster_url,
+                        updated_at=excluded.updated_at, active=excluded.active,
+                        series_id=excluded.series_id
+                    WHERE excluded.updated_at >= media_list_items.updated_at
+                """, (profile_id, list_id, media_type, media_id, title, poster_url, updated_at, active, series_id))
+                if list_id == "leandro" and media_type in ("movie", "series"):
+                    db.execute("""
+                        INSERT INTO favorites(profile_id,media_type,media_id,title,poster_url,updated_at,active)
+                        VALUES(?,?,?,?,?,?,?)
+                        ON CONFLICT(profile_id,media_type,media_id) DO UPDATE SET
+                            title=excluded.title, poster_url=excluded.poster_url,
+                            updated_at=excluded.updated_at, active=excluded.active
+                        WHERE excluded.updated_at >= favorites.updated_at
+                    """, (profile_id, media_type, media_id, title, poster_url, updated_at, active))
         self.send_json(200, {"status": "saved"})
 
     def put_playback_preferences(self):

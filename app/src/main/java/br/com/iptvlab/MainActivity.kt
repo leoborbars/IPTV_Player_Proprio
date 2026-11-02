@@ -65,6 +65,7 @@ class MainActivity : Activity() {
     private lateinit var catalogSettingsStore: CatalogSettingsStore
     private lateinit var progressStore: WatchProgressStore
     private lateinit var favoriteStore: FavoriteStore
+    private lateinit var mediaListStore: MediaListStore
     private lateinit var progressSettingsStore: ProgressSyncSettingsStore
     private lateinit var playbackPreferencesStore: PlaybackPreferencesStore
     private var client: XtreamClient? = null
@@ -174,6 +175,7 @@ class MainActivity : Activity() {
         catalogSettingsStore = CatalogSettingsStore(applicationContext)
         progressStore = WatchProgressStore(applicationContext)
         favoriteStore = FavoriteStore(applicationContext)
+        mediaListStore = MediaListStore(applicationContext)
         progressSettingsStore = ProgressSyncSettingsStore(applicationContext)
         playbackPreferencesStore = PlaybackPreferencesStore(applicationContext)
         root.setBackgroundColor(Color.rgb(12, 17, 25))
@@ -352,6 +354,7 @@ class MainActivity : Activity() {
         val generation = ++connectionGeneration
         val profileId = WatchProgressStore.profileId(credentials.username)
         activeProfileId = profileId
+        mediaListStore.migrateFavorites(profileId, favoriteStore.all(profileId))
         client = c
         homeLoading = true
         homeError = null
@@ -388,6 +391,7 @@ class MainActivity : Activity() {
             }
             syncProgressProfile(profileId, WatchProgressStore.legacyProfileId(credentials.server, credentials.username))
             syncFavoritesProfile(profileId)
+            syncListsProfile(profileId)
             runOnUiThread {
                 if (generation == connectionGeneration && homeIsVisible) showHome()
             }
@@ -409,6 +413,7 @@ class MainActivity : Activity() {
         val profileId = WatchProgressStore.profileId(credentials.username)
         val legacyProfileId = WatchProgressStore.legacyProfileId(credentials.server, credentials.username)
         activeProfileId = profileId
+        mediaListStore.migrateFavorites(profileId, favoriteStore.all(profileId))
         clearCatalogData()
         client = c
         homeLoading = true
@@ -420,6 +425,7 @@ class MainActivity : Activity() {
             c.authenticate()
             syncProgressProfile(profileId, legacyProfileId)
             syncFavoritesProfile(profileId)
+            syncListsProfile(profileId)
             rememberCredentials?.let { remember ->
                 runCatching {
                     if (remember) credentialStore.save(credentials) else credentialStore.clear()
@@ -531,6 +537,7 @@ class MainActivity : Activity() {
             "Início" -> showHome()
             "Filmes" -> showMovieCategories()
             "Séries" -> showSeriesCategories()
+            "Listas" -> showLists()
             "Filmes 4K" -> {
                 val category = fourKCategory
                 if (category == null) {
@@ -732,7 +739,6 @@ class MainActivity : Activity() {
             .format(Instant.ofEpochMilli(BuildConfig.BUILD_TIME_MS))
         val details = listOf(
             "Projeto" to "IPTV Player Android · Le&Sil Stream",
-            "Versão" to "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
             "Hash da compilação (fontes)" to BuildConfig.BUILD_HASH,
             "Revisão Git" to BuildConfig.GIT_REVISION,
             "Compilado em" to buildDate,
@@ -929,6 +935,38 @@ class MainActivity : Activity() {
             }
     }
 
+    private fun syncListsProfile(profileId: String) {
+        mediaListStore.migrateFavorites(profileId, favoriteStore.all(profileId))
+        val settings = progressSettingsStore.load() ?: return
+        runCatching {
+            val syncClient = ProgressSyncClient(settings)
+            val (remoteLists, remoteItems) = syncClient.fetchLists(profileId)
+            mediaListStore.merge(profileId, remoteLists, remoteItems)
+            val remoteListById = remoteLists.associateBy { it.listId }
+            val remoteItemByKey = remoteItems.associateBy { Triple(it.listId, it.mediaType, it.mediaId) }
+            mediaListStore.lists(profileId)
+                .filter { it.updatedAt > (remoteListById[it.listId]?.updatedAt ?: 0L) }
+                .forEach { syncClient.upsertList(profileId, it) }
+            mediaListStore.items(profileId)
+                .filter { it.updatedAt > (remoteItemByKey[Triple(it.listId, it.mediaType, it.mediaId)]?.updatedAt ?: 0L) }
+                .forEach { syncClient.upsertListItem(profileId, it) }
+        }.onFailure { error ->
+            android.util.Log.w("LeSilLists", "Sync failed: ${error.javaClass.simpleName}: ${error.message}")
+        }
+    }
+
+    private fun syncListItem(profileId: String, item: MediaListItem) {
+        val settings = progressSettingsStore.load() ?: return
+        runCatching { ProgressSyncClient(settings).upsertListItem(profileId, item) }
+            .onFailure { android.util.Log.w("LeSilLists", "Upload failed: ${it.javaClass.simpleName}") }
+    }
+
+    private fun syncList(profileId: String, list: MediaListEntry) {
+        val settings = progressSettingsStore.load() ?: return
+        runCatching { ProgressSyncClient(settings).upsertList(profileId, list) }
+            .onFailure { android.util.Log.w("LeSilLists", "Upload failed: ${it.javaClass.simpleName}") }
+    }
+
     private fun refreshRemoteState() {
         val profile = activeProfileId ?: return
         val activeClient = client ?: return
@@ -936,8 +974,11 @@ class MainActivity : Activity() {
         worker.execute {
             syncProgressProfile(profile, WatchProgressStore.legacyProfileId(activeClient.server, activeClient.username))
             val previousFavorites = favoriteStore.all(profile)
+            val previousLists = mediaListStore.items(profile)
             syncFavoritesProfile(profile)
-            val favoritesChanged = favoriteStore.all(profile) != previousFavorites
+            syncListsProfile(profile)
+            val favoritesChanged = favoriteStore.all(profile) != previousFavorites ||
+                mediaListStore.items(profile) != previousLists
             runOnUiThread {
                 if (generation != connectionGeneration || player != null) return@runOnUiThread
                 if (!favoritesChanged) return@runOnUiThread
@@ -955,7 +996,7 @@ class MainActivity : Activity() {
     private fun favoriteMovies(): List<CatalogEntry> {
         val profile = activeProfileId ?: return emptyList()
         val catalog = allMovies.associateBy { it.id }
-        return favoriteStore.active(profile, "movie").map { saved ->
+        return mediaListStore.activeItems(profile, mediaListStore.selected(profile).listId, "movie").map { saved ->
             val item = catalog[saved.mediaId]
             item?.copy(posterUrl = item.posterUrl ?: saved.posterUrl)
                 ?: CatalogEntry(saved.mediaId, saved.title, posterUrl = saved.posterUrl)
@@ -965,29 +1006,156 @@ class MainActivity : Activity() {
     private fun favoriteSeries(): List<SeriesEntry> {
         val profile = activeProfileId ?: return emptyList()
         val catalog = featuredSeries.associateBy { it.id }
-        return favoriteStore.active(profile, "series").map { saved ->
+        return mediaListStore.activeItems(profile, mediaListStore.selected(profile).listId, "series").map { saved ->
             val item = catalog[saved.mediaId]
             item?.copy(coverUrl = item.coverUrl ?: saved.posterUrl)
                 ?: SeriesEntry(saved.mediaId, saved.title, saved.posterUrl)
         }
     }
 
-    private fun toggleFavorite(type: String, id: Int, title: String, posterUrl: String?): Boolean {
-        val profile = activeProfileId ?: return false
-        val active = favoriteStore.get(profile, type, id)?.active != true
-        val item = FavoriteEntry(type, id, title, posterUrl, System.currentTimeMillis(), active)
-        favoriteStore.save(profile, item)
-        worker.execute { syncFavoriteItem(profile, item) }
-        msg(if (active) "Adicionado aos favoritos" else "Removido dos favoritos")
-        if (type == "movie" && activeCatalogSection == "movie" &&
-            selectedMovieCategoryId == favoriteMoviesCategory.id && currentMovieNav == "Filmes") {
-            movies = favoriteMovies()
-            showMovies()
-        } else if (type == "series" && activeCatalogSection == "series" && selectedSeriesCategoryId == favoriteSeriesCategory.id &&
-            visibleSeriesCategory?.id == favoriteSeriesCategory.id) {
-            showSeries(favoriteSeriesCategory, favoriteSeries())
+    private fun saveMembership(listId: String, type: String, id: Int, title: String,
+                               posterUrl: String?, active: Boolean, seriesId: Int? = null) {
+        val profile = activeProfileId ?: return
+        val old = mediaListStore.getItem(profile, listId, type, id)
+        val item = MediaListItem(listId, type, id, title, posterUrl,
+            maxOf(System.currentTimeMillis(), (old?.updatedAt ?: 0L) + 1), active, seriesId)
+        mediaListStore.saveItem(profile, item)
+        worker.execute { syncListItem(profile, item) }
+        if (listId == MediaListStore.LEANDRO_ID && type != "episode") {
+            val legacy = FavoriteEntry(type, id, title, posterUrl, item.updatedAt, active)
+            favoriteStore.save(profile, legacy)
+            worker.execute { syncFavoriteItem(profile, legacy) }
         }
-        return active
+        if (type == "movie" && activeCatalogSection == "movie") {
+            if (selectedMovieCategoryId == favoriteMoviesCategory.id) movies = favoriteMovies()
+            showMovies(id.takeIf { active || selectedMovieCategoryId != favoriteMoviesCategory.id })
+        } else if (type == "series" && activeCatalogSection == "series") {
+            if (selectedSeriesCategoryId == favoriteSeriesCategory.id) showSeries(favoriteSeriesCategory, favoriteSeries(), id.takeIf { active })
+            else showSeries(visibleSeriesCategory, visibleSeries, id)
+        }
+    }
+
+    private fun showListActions(type: String, id: Int, title: String, posterUrl: String?, seriesId: Int? = null): Boolean {
+        val profile = activeProfileId ?: return false
+        val selected = mediaListStore.selected(profile)
+        val inSelected = mediaListStore.getItem(profile, selected.listId, type, id)?.active == true
+        val options = if (inSelected) arrayOf("Adicionar a uma lista", "Remover de ${selected.name}")
+            else arrayOf("Adicionar a uma lista")
+        AlertDialog.Builder(this).setTitle(title).setItems(options) { _, which ->
+            if (which == 0) chooseListForItem(type, id, title, posterUrl, seriesId)
+            else saveMembership(selected.listId, type, id, title, posterUrl, false, seriesId)
+        }.setNegativeButton("Cancelar", null).show()
+        return inSelected
+    }
+
+    private fun chooseListForItem(type: String, id: Int, title: String, posterUrl: String?, seriesId: Int?) {
+        val profile = activeProfileId ?: return
+        val lists = mediaListStore.activeLists(profile)
+        val labels = lists.map { list ->
+            val selected = mediaListStore.getItem(profile, list.listId, type, id)?.active == true
+            "${if (selected) "★ " else ""}${list.name}"
+        } + "Criar nova lista…"
+        AlertDialog.Builder(this).setTitle("Adicionar a uma lista")
+            .setItems(labels.toTypedArray()) { _, index ->
+                if (index == lists.size) createList { list ->
+                    saveMembership(list.listId, type, id, title, posterUrl, true, seriesId)
+                    msg("Adicionado a ${list.name}")
+                } else {
+                    val list = lists[index]
+                    saveMembership(list.listId, type, id, title, posterUrl, true, seriesId)
+                    msg("Adicionado a ${list.name}")
+                }
+            }.setNegativeButton("Cancelar", null).show()
+    }
+
+    private fun createList(onCreated: (MediaListEntry) -> Unit = { showLists() }) {
+        val profile = activeProfileId ?: return
+        val input = EditText(this).apply {
+            hint = "Nome da lista"
+            setSingleLine(true)
+            setPadding(dp(20), dp(15), dp(20), dp(15))
+        }
+        AlertDialog.Builder(this).setTitle("Criar lista").setView(input)
+            .setPositiveButton("Criar") { _, _ ->
+                val name = input.text.toString().trim()
+                if (name.isBlank()) { msg("Digite um nome para a lista"); return@setPositiveButton }
+                if (mediaListStore.activeLists(profile).any { it.name.equals(name, ignoreCase = true) }) {
+                    msg("Já existe uma lista com esse nome")
+                    return@setPositiveButton
+                }
+                val list = mediaListStore.newList(name)
+                mediaListStore.saveList(profile, list)
+                worker.execute { syncList(profile, list) }
+                onCreated(list)
+            }.setNegativeButton("Cancelar", null).show()
+    }
+
+    private fun removeList(list: MediaListEntry) {
+        val profile = activeProfileId ?: return
+        val replacement = mediaListStore.activeLists(profile).firstOrNull { it.listId != list.listId }
+        if (replacement == null) {
+            msg("Crie outra lista antes de remover a última lista")
+            return
+        }
+        AlertDialog.Builder(this).setTitle("Remover ${list.name}?")
+            .setMessage("Os itens desta lista serão removidos da seleção. Os títulos do catálogo não serão apagados.")
+            .setPositiveButton("Remover") { _, _ ->
+                val removed = list.copy(active = false, updatedAt = maxOf(System.currentTimeMillis(), list.updatedAt + 1))
+                val wasSelected = mediaListStore.selected(profile).listId == list.listId
+                mediaListStore.saveList(profile, removed)
+                if (wasSelected) mediaListStore.select(profile, replacement.listId)
+                worker.execute { syncList(profile, removed) }
+                showLists()
+            }.setNegativeButton("Cancelar", null).show()
+    }
+
+    private fun showLists() {
+        activeCatalogSection = null
+        focusedFavoriteItem = null
+        backAction = { showHome() }
+        val profile = activeProfileId ?: run {
+            replace(leSilUi.messageScreen("Listas", "Listas", "Configure sua conta Xtream para usar listas.", "Voltar") { showHome() })
+            return
+        }
+        mediaListStore.migrateFavorites(profile, favoriteStore.all(profile))
+        val selected = mediaListStore.selected(profile)
+        val screen = leSilUi.listsScreen(
+            lists = mediaListStore.activeLists(profile), selected = selected,
+            onSelect = { list -> mediaListStore.select(profile, list.listId); showLists() },
+            onCreate = { createList() }, onRemove = ::removeList
+        )
+        replace(screen)
+        val beforeLists = mediaListStore.lists(profile)
+        val beforeItems = mediaListStore.items(profile)
+        worker.execute {
+            syncListsProfile(profile)
+            if (beforeLists != mediaListStore.lists(profile) || beforeItems != mediaListStore.items(profile)) {
+                runOnUiThread { if (root.getChildAt(0) === screen) showLists() }
+            }
+        }
+    }
+
+    private fun changeFavoriteList(section: String) {
+        val profile = activeProfileId ?: return
+        val lists = mediaListStore.activeLists(profile)
+        val selectedId = mediaListStore.selected(profile).listId
+        AlertDialog.Builder(this)
+            .setTitle("Trocar lista")
+            .setSingleChoiceItems(lists.map { it.name }.toTypedArray(),
+                lists.indexOfFirst { it.listId == selectedId }) { dialog, index ->
+                dialog.dismiss()
+                val list = lists[index]
+                mediaListStore.select(profile, list.listId)
+                if (section == "movie") {
+                    movies = favoriteMovies()
+                    showMovies(movies.firstOrNull()?.id)
+                } else {
+                    val items = favoriteSeries()
+                    showSeries(favoriteSeriesCategory, items, items.firstOrNull()?.id)
+                }
+            }
+            .setNegativeButton("Cancelar", null)
+            .show()
     }
 
     private fun showMovieCategories() {
@@ -1058,7 +1226,7 @@ class MainActivity : Activity() {
         val effectiveSort = if (isFavorites) MovieSortOrder.TITLE_ASC else movieSortOrder
         val displayedMovies = sortMovies(movies, effectiveSort)
         replace(leSilUi.movieCatalog(
-            title = categoryName,
+            title = if (isFavorites) "$categoryName · ${activeProfileId?.let { mediaListStore.selected(it).name }.orEmpty()}" else categoryName,
             selectedNav = currentMovieNav,
             categories = if (currentMovieNav == "Filmes 4K") listOfNotNull(fourKCategory)
                 else buildList {
@@ -1080,10 +1248,14 @@ class MainActivity : Activity() {
                 focusedFavoriteItem = movie
                 requestMovieDetails(movie, deliver)
             },
-            favoriteIds = activeProfileId?.let { favoriteStore.active(it, "movie").map(FavoriteEntry::mediaId).toSet() }.orEmpty(),
-            onToggleFavorite = { movie -> toggleFavorite("movie", movie.id, movie.title, movie.posterUrl) },
+            favoriteIds = activeProfileId?.let { profile ->
+                mediaListStore.activeItems(profile, mediaListStore.selected(profile).listId, "movie")
+                    .map(MediaListItem::mediaId).toSet()
+            }.orEmpty(),
+            onToggleFavorite = { movie -> showListActions("movie", movie.id, movie.title, movie.posterUrl) },
             sortOrder = effectiveSort,
             onSort = if (isFavorites) null else { order -> movieSortOrder = order; showMovies() },
+            onChangeList = if (isFavorites) {{ changeFavoriteList("movie") }} else null,
             initialFocusMovieId = focusMovieId
         ))
     }
@@ -1133,7 +1305,8 @@ class MainActivity : Activity() {
         val displayedSeries = sortSeries(items, effectiveSort)
         backAction = { showSeries(visibleSeriesCategory, visibleSeries) }
         replace(leSilUi.seriesCatalog(
-            title = category?.title ?: allSeriesCategory.title,
+            title = if (isFavorites) "${favoriteSeriesCategory.title} · ${activeProfileId?.let { mediaListStore.selected(it).name }.orEmpty()}"
+                else category?.title ?: allSeriesCategory.title,
             selectedNav = "Séries",
             categories = listOf(allSeriesCategory, favoriteSeriesCategory) + seriesCategories,
             selectedCategoryId = selectedSeriesCategoryId,
@@ -1144,12 +1317,16 @@ class MainActivity : Activity() {
                 focusedFavoriteItem = CatalogEntry(series.id, series.title, posterUrl = series.coverUrl)
                 requestSeriesInfo(series) { info -> deliver(info?.asCatalogDetails(series)) }
             },
-            favoriteIds = activeProfileId?.let { favoriteStore.active(it, "series").map(FavoriteEntry::mediaId).toSet() }.orEmpty(),
-            onToggleFavorite = { series -> toggleFavorite("series", series.id, series.title, series.coverUrl) },
+            favoriteIds = activeProfileId?.let { profile ->
+                mediaListStore.activeItems(profile, mediaListStore.selected(profile).listId, "series")
+                    .map(MediaListItem::mediaId).toSet()
+            }.orEmpty(),
+            onToggleFavorite = { series -> showListActions("series", series.id, series.title, series.coverUrl) },
             initialDetails = (displayedSeries.firstOrNull { it.id == focusSeriesId }
                 ?: displayedSeries.firstOrNull())?.let { seriesDetailsCache[it.id]?.asCatalogDetails(it) },
             sortOrder = effectiveSort,
             onSort = if (isFavorites) null else { order -> seriesSortOrder = order; showSeries(category, items) },
+            onChangeList = if (isFavorites) {{ changeFavoriteList("series") }} else null,
             initialFocusSeriesId = focusSeriesId
         ))
     }
@@ -1273,6 +1450,8 @@ class MainActivity : Activity() {
         replace(leSilUi.seriesSeasons(series, shownDetails,
             episodeProgress = progress,
             onEpisode = { episode -> playEpisode(series, details, episode) },
+            onEpisodeHold = { episode -> showListActions("episode", episode.id, episode.title,
+                episode.imageUrl, series.id) },
             onBack = returnToSeries,
             initialFocusEpisodeId = focusEpisodeId
         ))
@@ -1950,7 +2129,7 @@ class MainActivity : Activity() {
                 val request = Runnable {
                     if (root.findFocus() === heldFocus && activeCatalogSection == section) {
                         favoriteHoldTriggered = true
-                        val active = toggleFavorite(section, item.id, item.title, item.posterUrl)
+                        val active = showListActions(section, item.id, item.title, item.posterUrl)
                         leSilUi.setCatalogFavoriteMark(tile, item.id, item.title, active)
                         tile.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
                     }

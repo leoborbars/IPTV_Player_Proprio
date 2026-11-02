@@ -112,17 +112,13 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
 
     fun home(data: LeSilHomeData, initialFocusTag: String? = null): View {
         val content = verticalScroll()
-        content.addView(hero(data))
 
         if (data.loading) {
             content.addView(stateLabel("Abrindo catálogo salvo neste aparelho…"))
         } else if (data.errorMessage != null) {
             content.addView(statePanel(data.errorMessage, data.errorActionLabel, actions.onRetry))
         } else {
-            if (data.continueWatching.isNotEmpty()) {
-                content.addView(continueRow(data.continueWatching))
-            }
-            content.addView(movieRow("Adicionados recentemente", data.recentMovies, data.movieProgress) {
+            content.addView(movieRow("Filmes recém adicionados", data.recentMovies, data.movieProgress) {
                 actions.onMoviePlay(it)
             })
             content.addView(seriesRow(data.featuredSeries))
@@ -230,6 +226,30 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
         return shell("Sobre", content)
     }
 
+    fun listsScreen(
+        lists: List<MediaListEntry>, selected: MediaListEntry,
+        onSelect: (MediaListEntry) -> Unit,
+        onCreate: () -> Unit, onRemove: (MediaListEntry) -> Unit
+    ): View {
+        val content = verticalScroll()
+        content.addView(pageTitle("Listas"))
+        val create = actionButton("+ Criar lista", false, onCreate)
+        content.addView(create, LinearLayout.LayoutParams(dp(190), dp(46)).apply { bottomMargin = dp(20) })
+        lists.forEach { list ->
+            val row = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+            val select = actionButton(list.name, selected.listId == list.listId) { onSelect(list) }
+            row.addView(select, LinearLayout.LayoutParams(0, dp(48), 1f))
+            val remove = actionButton("Remover", false) { onRemove(list) }.apply {
+                isEnabled = lists.size > 1
+                if (!isEnabled) alpha = 0.4f
+            }
+            row.addView(remove, LinearLayout.LayoutParams(dp(116), dp(48)).apply { marginStart = dp(10) })
+            content.addView(row, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
+        }
+        create.post { create.requestFocus() }
+        return shell("Listas", content)
+    }
+
     fun movieCatalog(
         title: String,
         selectedNav: String,
@@ -246,6 +266,7 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
         onToggleFavorite: ((CatalogEntry) -> Boolean)? = null,
         sortOrder: MovieSortOrder = MovieSortOrder.TITLE_ASC,
         onSort: ((MovieSortOrder) -> Unit)? = null,
+        onChangeList: (() -> Unit)? = null,
         initialFocusMovieId: Int? = null
     ): View {
         val seriesMode = selectedNav == "Séries"
@@ -277,6 +298,10 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
         val searchButton = catalogIconButton(android.R.drawable.ic_menu_search,
             if (seriesMode) "Buscar série" else "Buscar filme") { }
         filterButton.visibility = if (onSort == null) View.GONE else View.VISIBLE
+        val listButton = actionButton("Trocar lista", false) { onChangeList?.invoke() }.apply {
+            textSize = 13f
+            visibility = if (onChangeList == null) View.GONE else View.VISIBLE
+        }
         val catalogHorizontalInsetDp = 20
         val rightmostPosterInsetDp = (
             screenWidthDp - COLLAPSED_SIDEBAR_WIDTH_DP - catalogHorizontalInsetDp -
@@ -297,11 +322,20 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
         val catalogHeader = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            addView(sectionTitle(title).apply {
+            val heading = sectionTitle(title).apply {
                 textSize = 16f
                 gravity = Gravity.CENTER_VERTICAL
                 setPadding(dp(2), 0, 0, 0)
-            }, LinearLayout.LayoutParams(0, -1, 1f))
+            }
+            if (onChangeList != null) {
+                addView(heading, LinearLayout.LayoutParams(-2, -1))
+                addView(listButton, LinearLayout.LayoutParams(dp(116), dp(38)).apply {
+                    marginStart = dp(12)
+                })
+                addView(View(context), LinearLayout.LayoutParams(0, 1, 1f))
+            } else {
+                addView(heading, LinearLayout.LayoutParams(0, -1, 1f))
+            }
             addView(hero.position, LinearLayout.LayoutParams(-2, -2).apply {
                 marginStart = dp(10)
                 marginEnd = dp((rightmostPosterInsetDp - catalogHorizontalInsetDp).coerceAtLeast(0))
@@ -515,7 +549,13 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
                 }
                 KeyEvent.KEYCODE_DPAD_UP -> {
                     if (position < GRID_COLUMNS) {
-                        val control = if (column == GRID_COLUMNS - 1 && onSort != null) filterButton else searchButton
+                        val control = if (column == GRID_COLUMNS - 1) {
+                            when {
+                                onSort != null -> filterButton
+                                onChangeList != null -> listButton
+                                else -> searchButton
+                            }
+                        } else searchButton
                         if (control.requestFocus()) {
                             // A pending GridView retry must not pull focus back from the toolbar.
                             focusRequestGeneration++
@@ -681,15 +721,23 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
         }
         searchButton.id = View.generateViewId()
         filterButton.id = View.generateViewId()
-        searchButton.nextFocusRightId = filterButton.id
+        listButton.id = View.generateViewId()
+        searchButton.nextFocusRightId = if (onSort != null) filterButton.id else listButton.id
         filterButton.nextFocusLeftId = searchButton.id
-        listOf(searchButton, filterButton).forEach { button ->
+        listButton.nextFocusLeftId = searchButton.id
+        listOf(searchButton, filterButton, listButton).forEach { button ->
             button.setOnKeyListener { _, keyCode, event ->
                 if (event.action != KeyEvent.ACTION_DOWN) return@setOnKeyListener false
                 when (keyCode) {
                     KeyEvent.KEYCODE_DPAD_DOWN -> requestMovieFocus(focusedMoviePosition.coerceAtMost(GRID_COLUMNS - 1))
-                    KeyEvent.KEYCODE_DPAD_LEFT -> if (button === filterButton) searchButton.requestFocus() else false
-                    KeyEvent.KEYCODE_DPAD_RIGHT -> if (button === searchButton && onSort != null) filterButton.requestFocus() else true
+                    KeyEvent.KEYCODE_DPAD_LEFT -> if (button === filterButton || button === listButton) searchButton.requestFocus() else false
+                    KeyEvent.KEYCODE_DPAD_RIGHT -> if (button === searchButton) {
+                        when {
+                            onSort != null -> filterButton.requestFocus()
+                            onChangeList != null -> listButton.requestFocus()
+                            else -> true
+                        }
+                    } else true
                     else -> false
                 }
             }
@@ -703,7 +751,8 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
             },
             onContentLeftEdge = {
                 val focused = content.findFocus()
-                focused !== searchButton && focused !== filterButton && focusedMoviePosition % GRID_COLUMNS == 0
+                focused !== searchButton && focused !== filterButton && focused !== listButton &&
+                    focusedMoviePosition % GRID_COLUMNS == 0
             },
             onContentRefocus = { requestMovieFocus(focusedMoviePosition) },
             initialFocusInContent = initialFocusMovieId != null
@@ -724,6 +773,7 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
         initialDetails: MovieDetails? = null,
         sortOrder: MovieSortOrder = MovieSortOrder.TITLE_ASC,
         onSort: ((MovieSortOrder) -> Unit)? = null,
+        onChangeList: (() -> Unit)? = null,
         initialFocusSeriesId: Int? = null
     ): View {
         val byId = series.associateBy { it.id }
@@ -750,6 +800,7 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
             },
             sortOrder = sortOrder,
             onSort = onSort,
+            onChangeList = onChangeList,
             initialFocusMovieId = initialFocusSeriesId
         )
     }
@@ -759,6 +810,7 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
         details: SeriesDetails,
         episodeProgress: Map<Int, WatchProgress>,
         onEpisode: (EpisodeEntry) -> Unit,
+        onEpisodeHold: (EpisodeEntry) -> Unit,
         onBack: () -> Unit,
         initialFocusEpisodeId: Int? = null
     ): View {
@@ -953,11 +1005,66 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
         }
         seasonRows.forEachIndexed { seasonIndex, cards ->
             cards.forEachIndexed { index, card ->
+                val episode = populatedSeasons[seasonIndex].episodes[index]
+                var hold: Runnable? = null
+                var holdTriggered = false
+                fun cancelHold() { hold?.let(card::removeCallbacks); hold = null }
+                fun startHold() {
+                    cancelHold()
+                    holdTriggered = false
+                    val request = Runnable {
+                        if (card.hasFocus() || card.isPressed) {
+                            holdTriggered = true
+                            onEpisodeHold(episode)
+                            card.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+                        }
+                    }
+                    hold = request
+                    card.postDelayed(request, 3000)
+                }
+                var touchX = 0f
+                var touchY = 0f
+                card.setOnTouchListener { _, event ->
+                    when (event.actionMasked) {
+                        MotionEvent.ACTION_DOWN -> {
+                            touchX = event.x; touchY = event.y
+                            startHold()
+                            false
+                        }
+                        MotionEvent.ACTION_MOVE -> {
+                            val slop = ViewConfiguration.get(context).scaledTouchSlop
+                            if (kotlin.math.abs(event.x - touchX) > slop ||
+                                kotlin.math.abs(event.y - touchY) > slop) cancelHold()
+                            false
+                        }
+                        MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                            cancelHold()
+                            if (holdTriggered) {
+                                holdTriggered = false
+                                true
+                            } else false
+                        }
+                        else -> false
+                    }
+                }
                 if (index > 0) card.nextFocusLeftId = cards[index - 1].id
                 if (index + 1 < cards.size) card.nextFocusRightId = cards[index + 1].id
-                card.setOnKeyListener { _, keyCode, _ ->
-                    (index == 0 && keyCode == KeyEvent.KEYCODE_DPAD_LEFT) ||
-                        (index == cards.lastIndex && keyCode == KeyEvent.KEYCODE_DPAD_RIGHT)
+                card.setOnKeyListener { _, keyCode, event ->
+                    val select = keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER
+                    when {
+                        select && event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0 -> { startHold(); false }
+                        select && event.action == KeyEvent.ACTION_DOWN -> true
+                        select && event.action == KeyEvent.ACTION_UP -> {
+                            cancelHold()
+                            if (holdTriggered) { holdTriggered = false; true } else false
+                        }
+                        event.action == KeyEvent.ACTION_DOWN -> {
+                            cancelHold()
+                            (index == 0 && keyCode == KeyEvent.KEYCODE_DPAD_LEFT) ||
+                                (index == cards.lastIndex && keyCode == KeyEvent.KEYCODE_DPAD_RIGHT)
+                        }
+                        else -> false
+                    }
                 }
                 val previous = seasonRows.getOrNull(seasonIndex - 1)
                 val next = seasonRows.getOrNull(seasonIndex + 1)
@@ -1601,7 +1708,7 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
         nav.addView(brand)
 
         val menu = listOf(
-            "Início" to "⌂", "Filmes" to "◉", "Séries" to "▣",
+            "Início" to "⌂", "Filmes" to "◉", "Séries" to "▣", "Listas" to "☷",
             "Atualizar" to "↻", "Configurações" to "⚙", "Sobre" to "ⓘ"
         )
         val menuItems = mutableListOf<Triple<TextView, String, String>>()
@@ -1809,7 +1916,7 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
 
     private fun seriesRow(series: List<SeriesEntry>): View {
         val section = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
-        section.addView(sectionTitle("Séries recentes"))
+        section.addView(sectionTitle("Séries recém adicionadas"))
         if (series.isEmpty()) {
             section.addView(stateLabel("Nenhuma série disponível ou informada pelo provedor."))
             return section

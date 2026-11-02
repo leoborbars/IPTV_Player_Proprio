@@ -1,6 +1,6 @@
 # Le&Sil Progress Sync no OpenMediaVault
 
-Este serviço próprio mantém o progresso de reprodução e os favoritos do Le&Sil Stream sincronizados entre dispositivos na rede local. Ele roda em Docker Compose, usa SQLite num volume persistente e não recebe usuário/senha Xtream nem URLs dos vídeos.
+Este serviço próprio mantém o progresso de reprodução, as listas e os favoritos do Le&Sil Stream sincronizados entre dispositivos na rede local. Ele roda em Docker Compose, usa SQLite num volume persistente e não recebe usuário/senha Xtream nem URLs dos vídeos.
 
 ## Ambiente instalado
 
@@ -97,6 +97,10 @@ No NAS, execute `cd ~/nas-progress && sudo docker compose up -d --build`. A migr
 
 Para sincronizar também a preferência de tempo do botão **Ir para o Próximo**, copie a versão atual de `server.py` para o NAS e reconstrua o container com o mesmo comando. A nova tabela `playback_preferences` é criada automaticamente no volume existente; não use `down -v`. Até atualizar o NAS, a escolha continua salva localmente em cada aparelho, mas a API antiga responderá `404` para a preferência.
 
+Para ativar **Listas**, atualize `server.py` pelo procedimento de CMD acima e reconstrua o container. O banco cria `media_lists` e `media_list_items` no mesmo volume. Na primeira abertura, os favoritos já gravados no NAS são copiados para a lista **Leandro**, inclusive as remoções pendentes; o app também importa os favoritos locais de cada aparelho. A lista Leandro pode ser removida quando existir outra lista ativa, e a remoção é sincronizada como estado inativo. Mantenha o volume e o `.env`. Até o servidor ser atualizado, as listas adicionais ficam apenas no aparelho e as novas rotas respondem `404`.
+
+Se as rotas de Listas já funcionam, mas a remoção de **Leandro** não sincroniza, copie novamente o `server.py` desta revisão e reconstrua o container. A versão anterior da API rejeitava a remoção dessa lista; os dados do volume são preservados na atualização.
+
 ## Configurar o Le&Sil Stream
 
 Há duas formas:
@@ -122,11 +126,14 @@ Em **Configurações**, o app mostra o estado de conexão com a API. Quando o NA
 - `PUT /api/v1/progress`: grava/atualiza um filme ou episódio; exige o mesmo cabeçalho. Episódios usam `media_id` no formato `episode:<id>`.
 - `GET /api/v1/favorites?profile_id=<sha256>`: lista filmes e séries favoritos, inclusive remoções pendentes; exige o mesmo token.
 - `PUT /api/v1/favorites`: adiciona ou remove um favorito; exige o mesmo token. Remoções ficam registradas para sincronizar aparelhos que estavam offline.
+- `GET /api/v1/lists?profile_id=<sha256>`: devolve listas e seus itens, inclusive remoções pendentes.
+- `PUT /api/v1/lists`: cria, renomeia ou remove uma lista pelo estado `active` e `updated_at`.
+- `PUT /api/v1/list-items`: adiciona ou remove filmes, séries e episódios de uma lista. Episódios incluem `series_id` para identificar a série correspondente.
 - `GET /api/v1/playback-preferences?profile_id=<sha256>`: lê o tempo configurado para **Ir para o Próximo**.
 - `PUT /api/v1/playback-preferences`: grava `profile_id`, `next_prompt_seconds` (5 a 300) e `updated_at`. A atualização mais recente prevalece entre dispositivos.
 - Banco: `/data/progress.sqlite3` dentro do container, persistido pelo volume `progress-data`.
 
-O serviço salva ID da mídia, título, pôster, posição, duração, data de atualização e estado concluído. Favoritos têm tabela separada com tipo de mídia, título, pôster e estado ativo/removido. Cada API devolve até 5000 registros mais recentes por perfil. Os logs HTTP não registram URLs nem conteúdo assistido.
+O serviço salva ID da mídia, título, pôster, posição, duração, data de atualização e estado concluído. Listas e seus itens usam tabelas próprias e estado ativo/removido para sincronização offline. A lista Leandro mantém compatibilidade com a antiga API de favoritos. Cada API devolve até 5000 registros de progresso ou favoritos e até 20000 itens de listas por perfil. Os logs HTTP não registram URLs nem conteúdo assistido.
 
 ## Segurança
 

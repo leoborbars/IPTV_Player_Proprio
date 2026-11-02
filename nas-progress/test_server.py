@@ -1,6 +1,7 @@
-"""Regression checks for the profile-scoped playback preference endpoint."""
+"""Regression checks for NAS sync endpoints and migrations."""
 import json
 import os
+import sqlite3
 import tempfile
 import threading
 import time
@@ -58,6 +59,74 @@ class PlaybackPreferencesApiTest(unittest.TestCase):
             self.request("GET", f"/api/v1/playback-preferences?profile_id={self.profile}",
                          authorized=False)
         self.assertEqual(401, unauthorized.exception.code)
+
+    def test_existing_favorites_migrate_to_leandro_and_list_updates_sync(self):
+        now = int(time.time() * 1000)
+        self.request("PUT", "/api/v1/favorites", {
+            "profile_id": self.profile, "media_type": "movie", "media_id": 7,
+            "title": "Filme antigo", "poster_url": None, "updated_at": now, "active": True,
+        })
+        path = f"/api/v1/lists?profile_id={self.profile}"
+        first = self.request("GET", path)
+        self.assertEqual("Leandro", first["lists"][0]["name"])
+        self.assertEqual(7, first["items"][0]["media_id"])
+        self.request("PUT", "/api/v1/lists", {
+            "profile_id": self.profile, "list_id": "11111111-1111-1111-1111-111111111111",
+            "name": "Teste", "updated_at": now, "active": True,
+        })
+        self.request("PUT", "/api/v1/list-items", {
+            "profile_id": self.profile, "list_id": "11111111-1111-1111-1111-111111111111",
+            "media_type": "episode", "media_id": 15, "series_id": 3,
+            "title": "Episódio", "poster_url": None, "updated_at": now, "active": True,
+        })
+        updated = self.request("GET", path)
+        self.assertEqual(2, len(updated["lists"]))
+        self.assertEqual(3, next(i for i in updated["items"] if i["media_type"] == "episode")["series_id"])
+        self.request("PUT", "/api/v1/list-items", {
+            "profile_id": self.profile, "list_id": "leandro", "media_type": "movie",
+            "media_id": 7, "title": "Filme antigo", "poster_url": None,
+            "updated_at": now + 1, "active": False,
+        })
+        self.request("PUT", "/api/v1/list-items", {
+            "profile_id": self.profile, "list_id": "leandro", "media_type": "movie",
+            "media_id": 7, "title": "Filme antigo", "poster_url": None,
+            "updated_at": now, "active": True,
+        })
+        self.assertFalse(self.request("GET", f"/api/v1/favorites?profile_id={self.profile}")["items"][0]["active"])
+
+    def test_migration_from_preexisting_favorites_table(self):
+        now = int(time.time() * 1000)
+        with sqlite3.connect(server.DB_PATH) as db:
+            db.execute("""CREATE TABLE favorites (
+                profile_id TEXT, media_type TEXT, media_id INTEGER, title TEXT,
+                poster_url TEXT, updated_at INTEGER, active INTEGER,
+                PRIMARY KEY(profile_id, media_type, media_id))""")
+            db.execute("INSERT INTO favorites VALUES (?,?,?,?,?,?,?)",
+                       (self.profile, "series", 9, "Série antiga", None, now, 1))
+        result = self.request("GET", f"/api/v1/lists?profile_id={self.profile}")
+        self.assertEqual("Leandro", result["lists"][0]["name"])
+        self.assertEqual(9, result["items"][0]["media_id"])
+
+    def test_leandro_can_be_removed_without_reimporting_old_favorites(self):
+        now = int(time.time() * 1000)
+        self.request("PUT", "/api/v1/favorites", {
+            "profile_id": self.profile, "media_type": "movie", "media_id": 7,
+            "title": "Filme antigo", "poster_url": None, "updated_at": now - 3,
+            "active": True,
+        })
+        path = f"/api/v1/lists?profile_id={self.profile}"
+        self.request("GET", path)
+        self.request("PUT", "/api/v1/lists", {
+            "profile_id": self.profile, "list_id": "leandro", "name": "Leandro",
+            "updated_at": now, "active": False,
+        })
+        self.request("PUT", "/api/v1/lists", {
+            "profile_id": self.profile, "list_id": "leandro", "name": "Leandro",
+            "updated_at": now - 1, "active": True,
+        })
+        result = self.request("GET", path)
+        self.assertFalse(next(item for item in result["lists"] if item["list_id"] == "leandro")["active"])
+        self.assertEqual(7, result["items"][0]["media_id"])
 
 
 if __name__ == "__main__":
