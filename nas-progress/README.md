@@ -22,6 +22,26 @@ scp -r "D:\Projetos\IPTV_Player_P0\nas-progress" pi@192.168.3.47:/home/pi/
 
 Se `scp` não for reconhecido, instale **OpenSSH Client** em Recursos opcionais do Windows ou transfira a pasta pelo WinSCP. Troque `pi` se o usuário SSH do NAS for outro. Ao atualizar, preserve o `.env` já criado no NAS: ele contém o segredo local e não faz parte dos arquivos do projeto.
 
+## Atualizar o serviço nas próximas versões
+
+Use este procedimento sempre que `server.py` mudar. Abra o **CMD no Windows**. Caso esteja conectado ao NAS e veja `pi@nas:~$`, digite `exit` antes: o NAS não consegue ler o caminho `D:\` do computador. Quando aparecer `C:\...>` ou `D:\...>`, execute:
+
+```cmd
+cd /d D:\Projetos\IPTV_Player_P0
+scp nas-progress\server.py pi@192.168.3.47:/home/pi/nas-progress/server.py
+ssh pi@192.168.3.47
+```
+
+Digite a senha SSH solicitada. No prompt `pi@nas:~$`, execute:
+
+```sh
+cd ~/nas-progress
+sudo docker compose up -d --build
+curl http://127.0.0.1:8787/health
+```
+
+O teste deve responder `{"status":"ok"}`. Se houver `Recv failure: Connection reset by peer` imediatamente após a reconstrução, espere alguns segundos e repita o `curl`. Se persistir, execute `sudo docker compose ps` e `sudo docker compose logs --tail=80 progress-sync`. Não recrie o `.env` nem use `docker compose down -v`: o token e os dados existentes devem ser preservados. Se `Dockerfile` ou `compose.yaml` também tiverem mudado, copie-os pelo mesmo método antes do `up -d --build`.
+
 ## Criar o token e iniciar o serviço
 
 Conecte por SSH:
@@ -75,6 +95,8 @@ ssh pi@192.168.3.47
 
 No NAS, execute `cd ~/nas-progress && sudo docker compose up -d --build`. A migração adiciona a coluna `hidden_from_continue` ao banco existente sem apagar o progresso; só então a remoção passa a sincronizar entre TV e celular.
 
+Para sincronizar também a preferência de tempo do botão **Ir para o Próximo**, copie a versão atual de `server.py` para o NAS e reconstrua o container com o mesmo comando. A nova tabela `playback_preferences` é criada automaticamente no volume existente; não use `down -v`. Até atualizar o NAS, a escolha continua salva localmente em cada aparelho, mas a API antiga responderá `404` para a preferência.
+
 ## Configurar o Le&Sil Stream
 
 Há duas formas:
@@ -100,6 +122,8 @@ Em **Configurações**, o app mostra o estado de conexão com a API. Quando o NA
 - `PUT /api/v1/progress`: grava/atualiza um filme ou episódio; exige o mesmo cabeçalho. Episódios usam `media_id` no formato `episode:<id>`.
 - `GET /api/v1/favorites?profile_id=<sha256>`: lista filmes e séries favoritos, inclusive remoções pendentes; exige o mesmo token.
 - `PUT /api/v1/favorites`: adiciona ou remove um favorito; exige o mesmo token. Remoções ficam registradas para sincronizar aparelhos que estavam offline.
+- `GET /api/v1/playback-preferences?profile_id=<sha256>`: lê o tempo configurado para **Ir para o Próximo**.
+- `PUT /api/v1/playback-preferences`: grava `profile_id`, `next_prompt_seconds` (5 a 300) e `updated_at`. A atualização mais recente prevalece entre dispositivos.
 - Banco: `/data/progress.sqlite3` dentro do container, persistido pelo volume `progress-data`.
 
 O serviço salva ID da mídia, título, pôster, posição, duração, data de atualização e estado concluído. Favoritos têm tabela separada com tipo de mídia, título, pôster e estado ativo/removido. Cada API devolve até 5000 registros mais recentes por perfil. Os logs HTTP não registram URLs nem conteúdo assistido.

@@ -64,6 +64,7 @@ class MainActivity : Activity() {
     private lateinit var progressStore: WatchProgressStore
     private lateinit var favoriteStore: FavoriteStore
     private lateinit var progressSettingsStore: ProgressSyncSettingsStore
+    private lateinit var playbackPreferencesStore: PlaybackPreferencesStore
     private var client: XtreamClient? = null
     private var activeProfileId: String? = null
     private var currentPlayingMovie: CatalogEntry? = null
@@ -115,6 +116,7 @@ class MainActivity : Activity() {
     private var playerPrimaryControl: View? = null
     private var playerTransportControls: List<View> = emptyList()
     private var playerSeekBar: DefaultTimeBar? = null
+    private var nextPromptButton: TextView? = null
     private var playerControlsVisible = false
     private var playerShowOnSelect = false
     private var diagnosticView: TextView? = null
@@ -153,6 +155,7 @@ class MainActivity : Activity() {
     private val refresh = object : Runnable {
         override fun run() {
             if (player != null) {
+                updateNearEndState()
                 updateDiagnostics()
                 uiHandler.postDelayed(this, 1000)
             }
@@ -167,6 +170,7 @@ class MainActivity : Activity() {
         progressStore = WatchProgressStore(applicationContext)
         favoriteStore = FavoriteStore(applicationContext)
         progressSettingsStore = ProgressSyncSettingsStore(applicationContext)
+        playbackPreferencesStore = PlaybackPreferencesStore(applicationContext)
         root.setBackgroundColor(Color.rgb(12, 17, 25))
         setContentView(root)
         setAppImmersive()
@@ -606,8 +610,33 @@ class MainActivity : Activity() {
         screen.addView(nasStatus)
         checkNasConnection(nasStatus)
         screen.addView(button("Configurar sincronização NAS") { showNasSyncSettings() })
+        val profile = activeProfileId
+        val seconds = profile?.let { playbackPreferencesStore.get(it).nextPromptSeconds } ?: 10
+        screen.addView(label("Reprodução", 18f))
+        screen.addView(button("Mostrar Próximo ${seconds} s antes do fim") { showNextPromptSettings() })
         screen.addView(button("Voltar") { showHome() })
         replace(ScrollView(this).apply { addView(screen) })
+    }
+
+    private fun showNextPromptSettings() {
+        val profile = activeProfileId ?: run {
+            msg("Configure a conta Xtream antes de alterar esta opção")
+            return
+        }
+        val choices = intArrayOf(5, 10, 15, 20, 30, 60)
+        val selected = playbackPreferencesStore.get(profile).nextPromptSeconds
+        AlertDialog.Builder(this)
+            .setTitle("Mostrar Próximo antes do fim")
+            .setSingleChoiceItems(choices.map { "$it segundos" }.toTypedArray(),
+                choices.indexOf(selected)) { dialog, index ->
+                val updated = PlaybackPreferences(choices[index], System.currentTimeMillis())
+                playbackPreferencesStore.save(profile, updated)
+                worker.execute { syncPlaybackPreferencesItem(profile, updated) }
+                dialog.dismiss()
+                showSettings()
+            }
+            .setNegativeButton("Cancelar", null)
+            .show()
     }
 
     private fun showAbout() {
@@ -746,6 +775,34 @@ class MainActivity : Activity() {
         }.onFailure { error ->
             android.util.Log.e("LeSilProgressSync", "profile=$profileTag fetch failed: ${error.javaClass.simpleName}: ${error.message}")
         }
+        syncPlaybackPreferencesProfile(profileId)
+    }
+
+    private fun syncPlaybackPreferencesProfile(profileId: String) {
+        val settings = progressSettingsStore.load() ?: return
+        runCatching {
+            val syncClient = ProgressSyncClient(settings)
+            val remote = syncClient.fetchPlaybackPreferences(profileId)
+            if (remote != null) playbackPreferencesStore.merge(profileId, remote)
+            var local = playbackPreferencesStore.get(profileId)
+            if (remote == null && local.updatedAt == 0L) {
+                local = local.copy(updatedAt = System.currentTimeMillis())
+                playbackPreferencesStore.save(profileId, local)
+            }
+            if (remote == null || local.updatedAt > remote.updatedAt) {
+                syncClient.upsertPlaybackPreferences(profileId, local)
+            }
+        }.onFailure { error ->
+            android.util.Log.w("LeSilPlaybackPreferences", "Sync failed: ${error.javaClass.simpleName}")
+        }
+    }
+
+    private fun syncPlaybackPreferencesItem(profileId: String, value: PlaybackPreferences) {
+        val settings = progressSettingsStore.load() ?: return
+        runCatching { ProgressSyncClient(settings).upsertPlaybackPreferences(profileId, value) }
+            .onFailure { error ->
+                android.util.Log.w("LeSilPlaybackPreferences", "Upload failed: ${error.javaClass.simpleName}")
+            }
     }
 
     private fun syncProgressItem(profileId: String, item: WatchProgress) {
@@ -1354,6 +1411,28 @@ class MainActivity : Activity() {
         }
         root.addView(playerHeader, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
 
+        var autoAdvanceQueued = false
+        val nearEndButton = playNext?.let { next ->
+            playerControlButton("▶", "Ir para o Próximo") {
+                if (player !== exo || autoAdvanceQueued) return@playerControlButton
+                autoAdvanceQueued = true
+                currentPlaybackCompleted = true
+                saveCurrentProgress(syncRemote = true, completed = true)
+                next()
+            }.apply {
+                id = View.generateViewId()
+                textSize = 14f
+                setPadding(dp(15), dp(9), dp(15), dp(9))
+                visibility = View.GONE
+                root.addView(this, FrameLayout.LayoutParams(-2, -2,
+                    Gravity.BOTTOM or Gravity.END).apply {
+                    bottomMargin = dp(125)
+                    marginEnd = dp(25)
+                })
+            }
+        }
+        nextPromptButton = nearEndButton
+
         val controlHint = label("", 14f).apply {
             gravity = Gravity.CENTER
             setTextColor(Color.WHITE)
@@ -1536,7 +1615,6 @@ class MainActivity : Activity() {
     })
     pv.hideController()
 
-        var autoAdvanceQueued = false
         exo.addListener(object : Player.Listener {
             override fun onTracksChanged(tracks: Tracks) { updateDiagnostics() }
             override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -1640,6 +1718,26 @@ class MainActivity : Activity() {
         """.trimIndent()
     }
 
+    private fun updateNearEndState() {
+        val exo = player ?: return
+        val duration = exo.duration
+        val seconds = activeProfileId?.let { playbackPreferencesStore.get(it).nextPromptSeconds } ?: 10
+        val remaining = duration - exo.currentPosition
+        val nearEnd = exo.playbackState == Player.STATE_READY && duration > 0L &&
+            remaining in 0L..seconds * 1000L
+        if (nearEnd && !currentPlaybackCompleted) {
+            currentPlaybackCompleted = true
+            saveCurrentProgress(syncRemote = true, completed = true)
+        }
+        nextPromptButton?.let { prompt ->
+            val visibility = if (nearEnd) View.VISIBLE else View.GONE
+            if (prompt.visibility != visibility) {
+                prompt.visibility = visibility
+                if (nearEnd) prompt.requestFocus()
+            }
+        }
+    }
+
     private fun saveCurrentProgress(syncRemote: Boolean, completed: Boolean = false) {
         val exo = player ?: return
         val movie = currentPlayingMovie ?: return
@@ -1686,6 +1784,7 @@ class MainActivity : Activity() {
         playerPrimaryControl = null
         playerTransportControls = emptyList()
         playerSeekBar = null
+        nextPromptButton = null
         playerControlsVisible = false
         playerShowOnSelect = false
         player?.release()
@@ -1716,6 +1815,7 @@ class MainActivity : Activity() {
         val selectKey = event.keyCode == KeyEvent.KEYCODE_DPAD_CENTER ||
             event.keyCode == KeyEvent.KEYCODE_ENTER || event.keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER
         if (player != null) {
+            if (selectKey && nextPromptButton?.hasFocus() == true) return super.dispatchKeyEvent(event)
             if (playerControlsVisible && event.action == KeyEvent.ACTION_DOWN &&
                 event.keyCode == KeyEvent.KEYCODE_DPAD_DOWN &&
                 playerTransportControls.contains(root.findFocus()) &&

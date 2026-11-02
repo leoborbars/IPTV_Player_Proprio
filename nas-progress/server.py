@@ -56,6 +56,13 @@ def connect_db():
             PRIMARY KEY (profile_id, media_type, media_id)
         )
     """)
+    connection.execute("""
+        CREATE TABLE IF NOT EXISTS playback_preferences (
+            profile_id TEXT PRIMARY KEY,
+            next_prompt_seconds INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )
+    """)
     return connection
 
 
@@ -85,7 +92,7 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/health":
             self.send_json(200, {"status": "ok"})
             return
-        if parsed.path not in ("/api/v1/progress", "/api/v1/favorites"):
+        if parsed.path not in ("/api/v1/progress", "/api/v1/favorites", "/api/v1/playback-preferences"):
             self.send_json(404, {"error": "not_found"})
             return
         if not self.authorized():
@@ -94,6 +101,14 @@ class Handler(BaseHTTPRequestHandler):
         profile_id = parse_qs(parsed.query).get("profile_id", [""])[0]
         if not PROFILE_RE.fullmatch(profile_id):
             self.send_json(400, {"error": "invalid_profile_id"})
+            return
+        if parsed.path == "/api/v1/playback-preferences":
+            with closing(connect_db()) as db:
+                row = db.execute(
+                    "SELECT next_prompt_seconds,updated_at FROM playback_preferences WHERE profile_id=?",
+                    (profile_id,),
+                ).fetchone()
+            self.send_json(200, dict(row) if row else {})
             return
         with closing(connect_db()) as db, db:
             if parsed.path == "/api/v1/progress":
@@ -112,11 +127,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_PUT(self):
         path = urlparse(self.path).path
-        if path not in ("/api/v1/progress", "/api/v1/favorites"):
+        if path not in ("/api/v1/progress", "/api/v1/favorites", "/api/v1/playback-preferences"):
             self.send_json(404, {"error": "not_found"})
             return
         if not self.authorized():
             self.send_json(401, {"error": "unauthorized"})
+            return
+        if path == "/api/v1/playback-preferences":
+            self.put_playback_preferences()
             return
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -173,6 +191,35 @@ class Handler(BaseHTTPRequestHandler):
                         updated_at=excluded.updated_at, active=excluded.active
                     WHERE excluded.updated_at >= favorites.updated_at
                 """, (profile_id, media_type, media_id, title, poster_url, updated_at, active))
+        self.send_json(200, {"status": "saved"})
+
+    def put_playback_preferences(self):
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if length <= 0 or length > 4096:
+                raise ValueError("invalid_body_size")
+            item = json.loads(self.rfile.read(length))
+            if not isinstance(item, dict):
+                raise ValueError("invalid_payload")
+            profile_id = str(item.get("profile_id", ""))
+            seconds = int(item.get("next_prompt_seconds"))
+            updated_at = int(item.get("updated_at"))
+            if not PROFILE_RE.fullmatch(profile_id) or not 5 <= seconds <= 300:
+                raise ValueError("invalid_preferences")
+            if not 0 < updated_at <= int(time.time() * 1000) + 300000:
+                raise ValueError("invalid_timestamp")
+        except (ValueError, TypeError, json.JSONDecodeError):
+            self.send_json(400, {"error": "invalid_payload"})
+            return
+        with closing(connect_db()) as db, db:
+            db.execute("""
+                INSERT INTO playback_preferences(profile_id,next_prompt_seconds,updated_at)
+                VALUES(?,?,?)
+                ON CONFLICT(profile_id) DO UPDATE SET
+                    next_prompt_seconds=excluded.next_prompt_seconds,
+                    updated_at=excluded.updated_at
+                WHERE excluded.updated_at >= playback_preferences.updated_at
+            """, (profile_id, seconds, updated_at))
         self.send_json(200, {"status": "saved"})
 
     def do_OPTIONS(self):

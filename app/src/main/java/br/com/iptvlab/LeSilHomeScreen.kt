@@ -6,6 +6,8 @@ import android.animation.Animator
 import android.animation.AnimatorListenerAdapter
 import android.animation.ValueAnimator
 import android.graphics.Color
+import android.graphics.Canvas
+import android.graphics.Paint
 import android.graphics.PorterDuff
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -31,7 +33,6 @@ import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
-import kotlin.math.roundToInt
 
 enum class MovieSortOrder(val label: String, val formatPattern: Regex? = null) {
     TITLE_ASC("Título: A–Z"),
@@ -1912,7 +1913,11 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
                 rightMargin = dp(8)
             })
         }
-        card.addView(watchProgressBar(progress), FrameLayout.LayoutParams(-1, dp(4), Gravity.BOTTOM))
+        card.addView(watchProgressBar(progress), FrameLayout.LayoutParams(-1, dp(5), Gravity.BOTTOM).apply {
+            bottomMargin = dp(6)
+            marginStart = dp(6)
+            marginEnd = dp(6)
+        })
         card.contentDescription = "Abrir $title"
         return card
     }
@@ -1922,20 +1927,18 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
             progress?.completed == true -> 1f
             progress != null && progress.positionMs > 0L && progress.durationMs > 0L ->
                 (progress.positionMs.toDouble() / progress.durationMs).toFloat().coerceIn(0f, 0.99f)
+            progress != null && progress.positionMs > 0L -> 0.02f
             else -> 0f
         }
-        return FrameLayout(context).apply {
-            visibility = if (fraction > 0f) View.VISIBLE else View.GONE
-            val fill = View(context).apply {
-                setBackgroundColor(if (progress?.completed == true) 0xFF23864A.toInt() else 0xFF1689F5.toInt())
-            }
-            addView(fill, FrameLayout.LayoutParams(0, -1, Gravity.START))
-            addOnLayoutChangeListener { _, left, _, right, _, _, _, _, _ ->
-                val width = right - left
-                val fillWidth = (width * fraction).roundToInt().coerceAtLeast(dp(3)).coerceAtMost(width)
-                if (fill.layoutParams.width != fillWidth) {
-                    fill.layoutParams = (fill.layoutParams as FrameLayout.LayoutParams).apply { this.width = fillWidth }
-                }
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = if (progress?.completed == true) 0xFF23864A.toInt() else 0xFF1689F5.toInt()
+        }
+        return object : View(context) {
+            init { visibility = if (fraction > 0f) View.VISIBLE else View.GONE }
+            override fun onDraw(canvas: Canvas) {
+                super.onDraw(canvas)
+                canvas.drawRect(0f, 0f, (width * fraction).coerceAtLeast(dp(3).toFloat()),
+                    height.toFloat(), paint)
             }
         }
     }

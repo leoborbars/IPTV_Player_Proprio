@@ -11,10 +11,10 @@ Aplicativo VOD para Android TV/Google TV e Android, com catálogo Xtream Codes, 
 - Séries usam a mesma grade e navegação dos filmes, com sinopse e número de temporadas da série selecionada. Ao abrir uma série, o app mostra apenas temporadas com episódios, que reproduzem no Media3.
 - Ao iniciar ou selecionar **Atualizar** no menu principal, uma tela de atualização ocupa toda a tela até o catálogo carregar. **Continuar assistindo** na Home reúne filmes e episódios; segure uma capa por 3 segundos para tirá-la da lista sem marcar o conteúdo como assistido. A fileira **Filmes 4K** foi removida da Home.
 - Player Media3 existente com controles e diagnóstico de reprodução.
-- Progresso local de filmes e episódios. Uma barra azul nas capas mostra a fração assistida; ao terminar, a barra fica verde. Itens não iniciados não exibem barra. Ao rever um item concluído, a barra volta a azul e acompanha a nova reprodução. Episódios retomam do ponto salvo e, ao terminar, o próximo episódio começa automaticamente quando disponível.
+- Progresso local de filmes e episódios. A barra azul permanece visível também na capa selecionada e acompanha filmes nas fileiras da Home e no catálogo, e episódios em **Continuar assistindo** e na tela de temporadas. Ao entrar nos últimos 10 segundos (ou no tempo escolhido em Configurações), o item é marcado como concluído, a barra fica verde e aparece **Ir para o Próximo** quando houver outro título. Episódios ainda avançam automaticamente ao terminar. Ao rever um item concluído, a barra volta a azul e acompanha a nova reprodução.
 - **Favoritos** ficam nas categorias de Filmes e Séries. Segure uma capa por 3 segundos no controle ou na tela para adicionar/remover; a estrela aparece no título da capa.
 - Sincronização opcional do progresso e dos favoritos entre TV e celular por um serviço próprio no NAS/OpenMediaVault.
-- Em **Configurações**, o app mostra o estado da conexão com o NAS.
+- Em **Configurações**, o app mostra o estado da conexão com o NAS e permite escolher quando exibir **Ir para o Próximo** (5, 10, 15, 20, 30 ou 60 segundos antes do fim). A preferência é salva no aparelho e sincronizada pelo NAS entre os dispositivos da mesma conta Xtream após atualizar o serviço.
 - O item **Filmes 4K** foi removido do menu lateral. Na lista de categorias de Filmes, a categoria 4K do provedor aparece logo abaixo de **Favoritos**, quando disponível. Os rótulos das categorias de Filmes e Séries omitem o prefixo repetido e usam uma coluna mais estreita.
 - **Sobre**, abaixo de Configurações, mostra versão, hash das fontes usadas na compilação, revisão Git, data/hora da compilação e informações do dispositivo. O hash das fontes identifica o código e os recursos do app; não é o checksum do APK.
 
@@ -22,7 +22,9 @@ A versão Android é `0.3-lesil` (APK Debug). O ícone Le&Sil integrado ao app e
 
 O serviço no NAS respondeu `{"status":"ok"}` em `/health`. A sincronização entre os dois aparelhos também foi exercitada após a migração do perfil antigo: o celular recuperou registros que já estavam salvos pela TV.
 
-Para sincronizar **favoritos e episódios**, atualize o `nas-progress/server.py` no NAS e reconstrua o container conforme [as instruções do serviço](nas-progress/README.md). A versão antiga da API não aceita esses novos registros; até a atualização, eles ficam salvos no aparelho.
+Em 02/11/2026, o `nas-progress/server.py` atualizado foi copiado para o NAS e o container foi reconstruído. O endpoint `/health` respondeu `{"status":"ok"}` e a rota de preferências de reprodução respondeu `401` sem token, confirmando que está disponível e protegida. Para repetir a atualização em versões futuras, siga o [procedimento habitual](#atualizar-o-serviço-no-nas-procedimento-habitual).
+
+No mesmo dia, o APK Debug compilou e foi instalado no Motorola Edge 70 Pro. No celular, a Home carregou, a barra azul permaneceu visível na capa selecionada em **Continuar assistindo**, e Configurações mostrou **NAS: conectado**. A opção **Mostrar Próximo** foi alterada de 10 para 15 segundos e restaurada para 10; o NAS devolveu o valor final de 10 segundos. Os dois testes automatizados da API de preferências passaram. O aviso nos últimos segundos e a passagem para o próximo episódio ainda precisam de teste com vídeo real.
 
 Em 27/10/2026, o APK Debug foi instalado na TCL e a navegação dos filmes foi testada por ADB: 20 linhas percorridas, movimento lateral entre capas, retorno da primeira coluna para **Categorias** e entrada/saída da categoria **DC**. O app permaneceu aberto e o log não mostrou exceção fatal nesse percurso. Esse teste não incluiu reprodução de vídeo. Os vídeos `Fotos_iptvplayer/video1.mp4` e `video4.mp4` serviram de referência para o movimento dos painéis.
 
@@ -105,6 +107,26 @@ curl http://127.0.0.1:8787/health
 Se o Docker responder `permission denied` para `/var/run/docker.sock`, execute os comandos Docker com `sudo`, por exemplo `sudo docker compose up -d --build`. A resposta do teste de saúde deve ser `{"status":"ok"}`. De outro aparelho na mesma rede, teste também `http://192.168.3.47:8787/health` no navegador.
 
 O `compose.yaml` publica a porta `8787` e guarda o banco em `progress-data`, que é um volume persistente do Docker. A política `restart: unless-stopped` inicia o container novamente após a reinicialização do NAS, desde que o Docker esteja ativo e o serviço não tenha sido parado manualmente. Para parar e iniciar novamente, use `docker compose down` e `docker compose up -d`; não use `docker compose down -v`, pois `-v` apaga o volume com os dados. Para atualizar o serviço após mudanças em `server.py` ou nos arquivos do NAS, copie os arquivos atualizados e rode `docker compose up -d --build`.
+
+### Atualizar o serviço no NAS (procedimento habitual)
+
+Abra o **CMD do Windows**. Se o prompt estiver em `pi@nas:~$`, digite `exit` primeiro: o caminho `D:\` só existe no Windows. No prompt `C:\...>` ou `D:\...>`, execute:
+
+```cmd
+cd /d D:\Projetos\IPTV_Player_P0
+scp nas-progress\server.py pi@192.168.3.47:/home/pi/nas-progress/server.py
+ssh pi@192.168.3.47
+```
+
+Informe a senha SSH quando solicitada. Depois que o prompt mudar para `pi@nas:~$`, execute **no NAS**:
+
+```sh
+cd ~/nas-progress
+sudo docker compose up -d --build
+curl http://127.0.0.1:8787/health
+```
+
+A resposta esperada é `{"status":"ok"}`. Se o `curl` falhar logo após o container iniciar, aguarde alguns segundos e repita o teste; se continuar falhando, consulte `sudo docker compose ps` e `sudo docker compose logs --tail=80 progress-sync`. Esse procedimento mantém o `.env` e o volume com os progressos. Quando `Dockerfile` ou `compose.yaml` também mudarem, copie esses arquivos para `/home/pi/nas-progress/` antes de reconstruir. Veja [as instruções completas do serviço](nas-progress/README.md).
 
 ### 4. Configurar TV e celular
 

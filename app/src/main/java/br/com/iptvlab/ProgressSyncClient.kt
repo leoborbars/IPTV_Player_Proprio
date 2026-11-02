@@ -8,6 +8,24 @@ import java.net.URLEncoder
 
 /** Small LAN-only HTTP client for the self-hosted SQLite progress API. */
 class ProgressSyncClient(private val settings: ProgressSyncSettings) {
+    fun fetchPlaybackPreferences(profileId: String): PlaybackPreferences? {
+        val query = URLEncoder.encode(profileId, Charsets.UTF_8.name())
+        val body = JSONObject(request("GET", "/api/v1/playback-preferences?profile_id=$query", null))
+        if (!body.has("next_prompt_seconds")) return null
+        return PlaybackPreferences(
+            body.getInt("next_prompt_seconds").coerceIn(5, 300),
+            body.getLong("updated_at").coerceAtLeast(0L)
+        )
+    }
+
+    fun upsertPlaybackPreferences(profileId: String, value: PlaybackPreferences) {
+        val payload = JSONObject()
+            .put("profile_id", profileId)
+            .put("next_prompt_seconds", value.nextPromptSeconds)
+            .put("updated_at", value.updatedAt)
+        request("PUT", "/api/v1/playback-preferences", payload)
+    }
+
     fun fetch(profileId: String): List<WatchProgress> {
         val query = URLEncoder.encode(profileId, Charsets.UTF_8.name())
         val body = request("GET", "/api/v1/progress?profile_id=$query", null)
