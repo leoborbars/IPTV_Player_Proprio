@@ -204,7 +204,10 @@ class XtreamClient(val server: String, val username: String, val password: Strin
                     imageUrl = safeImageUrl(episodeInfo.opt("movie_image"))
                         ?: safeImageUrl(episodeInfo.opt("cover_big"))
                         ?: safeImageUrl(episode.opt("stream_icon")),
-                    plot = textValue(episodeInfo.opt("plot")) ?: textValue(episode.opt("plot")),
+                    plot = textValue(episodeInfo.opt("plot"))
+                        ?: textValue(episodeInfo.opt("description"))
+                        ?: textValue(episode.opt("plot"))
+                        ?: textValue(episode.opt("description")),
                     duration = textValue(episodeInfo.opt("duration"))
                 )
             }

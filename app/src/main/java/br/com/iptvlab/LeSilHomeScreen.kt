@@ -790,16 +790,24 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
                     setPadding(0, dp(10), 0, 0)
                 })
             }
-            details.plot?.takeIf { it.isNotBlank() }?.let { plot ->
-                addView(TextView(context).apply {
-                    text = plot
-                    textSize = 14f
-                    setTextColor(0xFFB9B9B9.toInt())
-                    maxLines = 4
-                    ellipsize = android.text.TextUtils.TruncateAt.END
-                    setPadding(0, dp(10), 0, 0)
-                })
-            }
+        }
+        val seriesPlot = details.plot?.takeIf { it.isNotBlank() }.orEmpty()
+        val synopsis = TextView(context).apply {
+            text = seriesPlot
+            textSize = 14f
+            setTextColor(0xFFB9B9B9.toInt())
+            maxLines = 4
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            setPadding(0, dp(10), 0, 0)
+            visibility = if (seriesPlot.isBlank()) View.GONE else View.VISIBLE
+        }
+        hero.addView(synopsis)
+        fun showEpisodeSynopsis(episode: EpisodeEntry?) {
+            val episodePlot = episode?.plot?.takeIf { it.isNotBlank() }
+            synopsis.text = if (episodePlot != null) {
+                "E${episode.number}. ${episode.title}\n$episodePlot"
+            } else seriesPlot
+            synopsis.visibility = if (synopsis.text.isBlank()) View.GONE else View.VISIBLE
         }
         root.addView(hero, FrameLayout.LayoutParams(dp((screenWidthDp * 0.55f).toInt()), -2,
             Gravity.TOP or Gravity.START).apply { leftMargin = dp(26) })
@@ -821,6 +829,7 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
             background = rounded(if (primary) 0xFFE4E5E6.toInt() else 0xFF292C30.toInt(), Color.TRANSPARENT, 7)
             setTextColor(if (primary) 0xFF101214.toInt() else WHITE)
             setOnFocusChangeListener { view, focused ->
+                if (focused) showEpisodeSynopsis(null)
                 view.background = rounded(if (focused) 0xFFE4E5E6.toInt() else if (primary) 0xFF292C30.toInt() else 0xFF292C30.toInt(),
                     if (focused) Color.WHITE else Color.TRANSPARENT, 7)
                 (view as TextView).setTextColor(if (focused) 0xFF101214.toInt() else WHITE)
@@ -877,7 +886,10 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
                                 else android.text.TextUtils.TruncateAt.END
                             isSelected = focused
                         }
-                        if (focused) position.text = "${index + 1} / ${season.episodes.size}"
+                        if (focused) {
+                            position.text = "${index + 1} / ${season.episodes.size}"
+                            showEpisodeSynopsis(episode)
+                        }
                     }
                     setOnClickListener { onEpisode(episode) }
                     contentDescription = "${season.title}, episódio ${episode.number}: ${episode.title}" +
@@ -926,6 +938,10 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
             cards.forEachIndexed { index, card ->
                 if (index > 0) card.nextFocusLeftId = cards[index - 1].id
                 if (index + 1 < cards.size) card.nextFocusRightId = cards[index + 1].id
+                card.setOnKeyListener { _, keyCode, _ ->
+                    (index == 0 && keyCode == KeyEvent.KEYCODE_DPAD_LEFT) ||
+                        (index == cards.lastIndex && keyCode == KeyEvent.KEYCODE_DPAD_RIGHT)
+                }
                 val previous = seasonRows.getOrNull(seasonIndex - 1)
                 val next = seasonRows.getOrNull(seasonIndex + 1)
                 card.nextFocusUpId = previous?.getOrNull(index.coerceAtMost(previous.lastIndex))?.id ?: play.id
