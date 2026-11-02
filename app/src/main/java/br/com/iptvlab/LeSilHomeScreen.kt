@@ -81,7 +81,7 @@ data class LeSilHomeActions(
     val onRetry: () -> Unit,
     val onContinueOpen: (String) -> Unit,
     val onContinueRemove: (String) -> Unit,
-    val onMovieDetails: (CatalogEntry) -> Unit,
+    val onMoviePlay: (CatalogEntry) -> Unit,
     val onMovieCategory: (CatalogEntry) -> Unit,
     val onMovieFocus: (CatalogEntry, (MovieDetails?) -> Unit) -> Unit,
     val onSeriesCategory: (CatalogEntry) -> Unit,
@@ -110,12 +110,12 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
         return cleaned.ifEmpty { original }
     }
 
-    fun home(data: LeSilHomeData): View {
+    fun home(data: LeSilHomeData, initialFocusTag: String? = null): View {
         val content = verticalScroll()
         content.addView(hero(data))
 
         if (data.loading) {
-            content.addView(stateLabel("Carregando catálogo do provedor…"))
+            content.addView(stateLabel("Abrindo catálogo salvo neste aparelho…"))
         } else if (data.errorMessage != null) {
             content.addView(statePanel(data.errorMessage, data.errorActionLabel, actions.onRetry))
         } else {
@@ -123,11 +123,15 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
                 content.addView(continueRow(data.continueWatching))
             }
             content.addView(movieRow("Adicionados recentemente", data.recentMovies, data.movieProgress) {
-                actions.onMovieDetails(it)
+                actions.onMoviePlay(it)
             })
             content.addView(seriesRow(data.featuredSeries))
         }
-        return shell("Início", content)
+        val screen = shell("Início", content)
+        if (initialFocusTag != null) screen.post {
+            screen.findViewWithTag<View>(initialFocusTag)?.requestFocus()
+        }
+        return screen
     }
 
     fun catalogLoadingScreen(): View {
@@ -241,10 +245,14 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
         favoriteIds: Set<Int> = emptySet(),
         onToggleFavorite: ((CatalogEntry) -> Boolean)? = null,
         sortOrder: MovieSortOrder = MovieSortOrder.TITLE_ASC,
-        onSort: ((MovieSortOrder) -> Unit)? = null
+        onSort: ((MovieSortOrder) -> Unit)? = null,
+        initialFocusMovieId: Int? = null
     ): View {
         val seriesMode = selectedNav == "Séries"
-        val categoryPanel = categoryColumn("CATEGORIAS", categories, selectedCategoryId, onCategory)
+        val categoryPanel = categoryColumn(
+            "Categorias\n${if (seriesMode) "Séries" else "Filmes"}",
+            categories, selectedCategoryId, onCategory
+        )
         val content = FrameLayout(context).apply {
             background = catalogSurface()
             descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
@@ -544,7 +552,9 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
                 .toList()
             visibleMovieCount = found.size
             visibleMovies = found
-            focusedMoviePosition = 0
+            val initialPosition = if (filter.isEmpty())
+                found.indexOfFirst { it.id == initialFocusMovieId }.coerceAtLeast(0) else 0
+            focusedMoviePosition = initialPosition
             focusRequestGeneration++
             grid.tag = CATALOG_LEFT_EDGE_TAG
             focusAnchor.tag = CATALOG_LEFT_EDGE_TAG
@@ -564,11 +574,12 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
                 grid.adapter = null
                 return
             }
-            showMovie(found.first(), initialDetails?.takeIf { found.first().id == initialDetailsMovieId }, 1, total)
-            onMovieFocus(found.first()) { details ->
-                if (activeMovieId == found.first().id) {
+            val initialMovie = found[initialPosition]
+            showMovie(initialMovie, initialDetails?.takeIf { initialMovie.id == initialDetailsMovieId }, initialPosition + 1, total)
+            onMovieFocus(initialMovie) { details ->
+                if (activeMovieId == initialMovie.id) {
                     activeMovieDetails = details
-                    renderMovieCatalogHero(hero, found.first(), details, 1, total, categories)
+                    renderMovieCatalogHero(hero, initialMovie, details, initialPosition + 1, total, categories)
                 }
             }
             grid.adapter = object : android.widget.BaseAdapter() {
@@ -694,7 +705,8 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
                 val focused = content.findFocus()
                 focused !== searchButton && focused !== filterButton && focusedMoviePosition % GRID_COLUMNS == 0
             },
-            onContentRefocus = { requestMovieFocus(focusedMoviePosition) }
+            onContentRefocus = { requestMovieFocus(focusedMoviePosition) },
+            initialFocusInContent = initialFocusMovieId != null
         )
     }
 
@@ -711,7 +723,8 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
         onToggleFavorite: ((SeriesEntry) -> Boolean)? = null,
         initialDetails: MovieDetails? = null,
         sortOrder: MovieSortOrder = MovieSortOrder.TITLE_ASC,
-        onSort: ((MovieSortOrder) -> Unit)? = null
+        onSort: ((MovieSortOrder) -> Unit)? = null,
+        initialFocusSeriesId: Int? = null
     ): View {
         val byId = series.associateBy { it.id }
         val posters = series.map { item ->
@@ -725,7 +738,7 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
             selectedCategoryId = selectedCategoryId,
             movies = posters,
             initialDetails = initialDetails,
-            initialDetailsMovieId = series.firstOrNull()?.id,
+            initialDetailsMovieId = initialFocusSeriesId ?: series.firstOrNull()?.id,
             onCategory = onCategory,
             onMovie = { entry -> byId[entry.id]?.let(onSeries) },
             onMovieFocus = { entry, deliver ->
@@ -736,7 +749,8 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
                 { entry -> byId[entry.id]?.let(toggle) ?: false }
             },
             sortOrder = sortOrder,
-            onSort = onSort
+            onSort = onSort,
+            initialFocusMovieId = initialFocusSeriesId
         )
     }
 
@@ -745,7 +759,8 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
         details: SeriesDetails,
         episodeProgress: Map<Int, WatchProgress>,
         onEpisode: (EpisodeEntry) -> Unit,
-        onBack: () -> Unit
+        onBack: () -> Unit,
+        initialFocusEpisodeId: Int? = null
     ): View {
         val root = FrameLayout(context).apply { setBackgroundColor(0xFF14171B.toInt()) }
         val backdrop = ImageView(context).apply { scaleType = ImageView.ScaleType.CENTER_CROP }
@@ -847,6 +862,7 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
         body.addView(actions, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(28) })
 
         val seasonRows = mutableListOf<List<View>>()
+        var initialEpisodeCard: View? = null
         populatedSeasons.forEach { season ->
             val section = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
             val heading = LinearLayout(context).apply {
@@ -922,6 +938,7 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
                     setTextColor(WHITE)
                 }, LinearLayout.LayoutParams(-1, dp(28)))
                 row.addView(card, LinearLayout.LayoutParams(dp(200), dp(144)).apply { marginEnd = dp(7) })
+                if (episode.id == initialFocusEpisodeId) initialEpisodeCard = card
                 card
             }
             val horizontal = HorizontalScrollView(context).apply {
@@ -975,7 +992,7 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
         root.addView(scroll, FrameLayout.LayoutParams(-1, -1).apply {
             topMargin = dp((screenHeightDp * if (shortScreen) 0.48f else 0.58f).toInt())
         })
-        play.post { play.requestFocus() }
+        (initialEpisodeCard ?: play).let { target -> target.post { target.requestFocus() } }
         return root
     }
 
@@ -1082,7 +1099,8 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
         body: View,
         onCategoriesRight: (() -> Boolean)? = null,
         onContentLeftEdge: (() -> Boolean)? = null,
-        onContentRefocus: (() -> Boolean)? = null
+        onContentRefocus: (() -> Boolean)? = null,
+        initialFocusInContent: Boolean = false
     ): View {
         var focusZone = ""
         var panelAnimator: ValueAnimator? = null
@@ -1240,8 +1258,9 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
                 if (root.viewTreeObserver.isAlive) root.viewTreeObserver.removeOnGlobalFocusChangeListener(focusListener)
             }
         })
-        applyFocusZone("categories")
-        selectedCategory?.post { if (!selectedCategory.hasFocus()) selectedCategory.requestFocus() }
+        applyFocusZone(if (initialFocusInContent) "content" else "categories")
+        if (initialFocusInContent) root.post { onContentRefocus?.invoke() }
+        else selectedCategory?.post { if (!selectedCategory.hasFocus()) selectedCategory.requestFocus() }
         return root
     }
 
@@ -1741,7 +1760,9 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
         val cardHeight = if (shortScreen) 192 else 218
         movies.take(HOME_ROW_LIMIT).forEach { movie ->
             row.addView(mediaCard(movie.title, movie.posterUrl, movie.rating,
-                onClick = { onMovie(movie) }, progress = movieProgress[movie.id]),
+                onClick = { onMovie(movie) }, progress = movieProgress[movie.id]).apply {
+                tag = "home-recent:${movie.id}"
+            },
                 LinearLayout.LayoutParams(dp(cardWidth), dp(cardHeight)).apply { marginEnd = dp(10) })
         }
         val horizontal = HorizontalScrollView(context).apply {
@@ -1773,7 +1794,9 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
         items.take(HOME_ROW_LIMIT).forEach { item ->
             row.addView(mediaCard(item.title, item.posterUrl, item.rating,
                 { actions.onContinueOpen(item.mediaId) },
-                { actions.onContinueRemove(item.mediaId) }, item.progress),
+                { actions.onContinueRemove(item.mediaId) }, item.progress).apply {
+                tag = "home-continue:${item.mediaId}"
+            },
                 LinearLayout.LayoutParams(dp(cardWidth), dp(cardHeight)).apply { marginEnd = dp(10) })
         }
         section.addView(HorizontalScrollView(context).apply {
@@ -1796,7 +1819,9 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
         val cardHeight = if (shortScreen) 192 else 218
         series.take(HOME_ROW_LIMIT).forEach { item ->
             row.addView(mediaCard(item.title, item.coverUrl, item.rating,
-                onClick = { actions.onSeriesDetails(item) }),
+                onClick = { actions.onSeriesDetails(item) }).apply {
+                tag = "home-series:${item.id}"
+            },
                 LinearLayout.LayoutParams(dp(cardWidth), dp(cardHeight)).apply { marginEnd = dp(10) })
         }
         section.addView(HorizontalScrollView(context).apply {

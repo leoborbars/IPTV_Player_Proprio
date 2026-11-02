@@ -61,6 +61,8 @@ class MainActivity : Activity() {
     private val uiHandler = Handler(Looper.getMainLooper())
     private lateinit var root: FrameLayout
     private lateinit var credentialStore: CredentialsStore
+    private lateinit var catalogCacheStore: CatalogCacheStore
+    private lateinit var catalogSettingsStore: CatalogSettingsStore
     private lateinit var progressStore: WatchProgressStore
     private lateinit var favoriteStore: FavoriteStore
     private lateinit var progressSettingsStore: ProgressSyncSettingsStore
@@ -86,6 +88,7 @@ class MainActivity : Activity() {
     private var openingSeriesId: Int? = null
     private var visibleSeriesCategory: CatalogEntry? = null
     private var visibleSeries: List<SeriesEntry> = emptyList()
+    private var returnFromSeriesSeasons: (() -> Unit)? = null
     private var homeLoading = false
     private var homeError: String? = null
     private var homeErrorActionLabel = "Tentar novamente"
@@ -110,7 +113,7 @@ class MainActivity : Activity() {
     private var movieSortOrder = MovieSortOrder.NEWEST
     private var seriesSortOrder = MovieSortOrder.NEWEST
     private var backAction: (() -> Unit)? = null
-    private var returnFromPlayer: (() -> Unit)? = null
+    private var returnFromPlayer: ((CatalogEntry) -> Unit)? = null
     private var player: ExoPlayer? = null
     private var playerView: PlayerView? = null
     private var playerPrimaryControl: View? = null
@@ -144,7 +147,7 @@ class MainActivity : Activity() {
             onRetry = ::retryCatalog,
             onContinueOpen = ::openContinueItem,
             onContinueRemove = ::removeContinueItem,
-            onMovieDetails = { movie -> openMovieDetails(movie) { showHome() } },
+            onMoviePlay = { movie -> playMovie(movie) { played -> showHome("home-recent:${played.id}") } },
             onMovieCategory = { category -> selectMovieCategory(category, "Filmes 4K") },
             onMovieFocus = ::requestMovieDetails,
             onSeriesCategory = { category -> selectSeriesCategory(category) },
@@ -167,6 +170,8 @@ class MainActivity : Activity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         root = FrameLayout(this)
         credentialStore = CredentialsStore(applicationContext)
+        catalogCacheStore = CatalogCacheStore(applicationContext)
+        catalogSettingsStore = CatalogSettingsStore(applicationContext)
         progressStore = WatchProgressStore(applicationContext)
         favoriteStore = FavoriteStore(applicationContext)
         progressSettingsStore = ProgressSyncSettingsStore(applicationContext)
@@ -176,7 +181,11 @@ class MainActivity : Activity() {
         setAppImmersive()
         val saved = credentialStore.load()
         if (saved != null) {
-            startConnection(saved, rememberCredentials = null)
+            if (catalogSettingsStore.refreshOnStart()) {
+                startConnection(saved, rememberCredentials = null)
+            } else {
+                openSavedCatalog(saved)
+            }
         } else {
             homeLoading = false
             homeError = "Configure o servidor em Configurações para atualizar o catálogo."
@@ -332,7 +341,60 @@ class MainActivity : Activity() {
         replace(scroll)
     }
 
-    /** Opens the catalog first, then authenticates and refreshes Xtream data in the background. */
+    /** Opens only the last downloaded catalog. Xtream refresh is always explicit when disabled. */
+    private fun openSavedCatalog(credentials: SavedCredentials) {
+        val c = try {
+            XtreamClient(credentials.server, credentials.username, credentials.password)
+        } catch (_: IllegalArgumentException) {
+            startConnection(credentials, rememberCredentials = null)
+            return
+        }
+        val generation = ++connectionGeneration
+        val profileId = WatchProgressStore.profileId(credentials.username)
+        activeProfileId = profileId
+        client = c
+        homeLoading = true
+        homeError = null
+        homeErrorActionLabel = "Tentar novamente"
+        showHome()
+        worker.execute {
+            val snapshot = catalogCacheStore.load(credentials)
+            if (snapshot == null) {
+                runOnUiThread {
+                    if (generation != connectionGeneration) return@runOnUiThread
+                    android.util.Log.i("LeSilCatalog", "No saved catalog; waiting for manual update")
+                    homeLoading = false
+                    homeError = "Ainda não há um catálogo salvo neste aparelho. Selecione Atualizar para buscar filmes e séries."
+                    homeErrorActionLabel = "Atualizar agora"
+                    if (homeIsVisible) showHome()
+                }
+                return@execute
+            }
+            android.util.Log.i("LeSilCatalog", "Opening saved catalog without Xtream refresh")
+            val loadedRecent = sortByProviderDate(snapshot.movies)
+            runOnUiThread {
+                if (generation != connectionGeneration) return@runOnUiThread
+                applyCatalog(snapshot, loadedRecent)
+                homeLoading = false
+                when {
+                    homeIsVisible -> showHome()
+                    activeCatalogSection == "movie" && selectedMovieCategoryId == allMoviesCategory.id -> {
+                        movies = allMovies
+                        showMovies()
+                    }
+                    activeCatalogSection == "series" && selectedSeriesCategoryId == allSeriesCategory.id ->
+                        showSeries(null, featuredSeries)
+                }
+            }
+            syncProgressProfile(profileId, WatchProgressStore.legacyProfileId(credentials.server, credentials.username))
+            syncFavoritesProfile(profileId)
+            runOnUiThread {
+                if (generation == connectionGeneration && homeIsVisible) showHome()
+            }
+        }
+    }
+
+    /** Authenticates and refreshes the catalog from Xtream, also updating its local copy. */
     private fun startConnection(credentials: SavedCredentials, rememberCredentials: Boolean?) {
         val c = try {
             XtreamClient(credentials.server, credentials.username, credentials.password)
@@ -369,25 +431,18 @@ class MainActivity : Activity() {
             }
             val loadedCategories = c.movieCategories()
             val loadedMovies = c.movies()
-            val loadedFourKCategory = loadedCategories.firstOrNull { isFourKCategory(it.title) }
             val loadedSeriesCategories = runCatching { c.seriesCategories() }.getOrDefault(emptyList())
             val loadedSeries = runCatching { c.series() }.getOrDefault(emptyList())
             val loadedRecent = sortByProviderDate(loadedMovies)
             val loadedFeatured = loadedRecent.firstOrNull() ?: loadedMovies.firstOrNull()
             val loadedDetails = loadedFeatured?.let { featured -> runCatching { c.movieDetails(featured.id) }.getOrNull() }
-            val loadedFeaturedCategory = loadedFeatured?.categoryId?.let { id -> loadedCategories.firstOrNull { it.id == id }?.title }
+            val snapshot = CatalogSnapshot(loadedCategories, loadedMovies, loadedSeriesCategories,
+                loadedSeries, loadedDetails)
+            runCatching { catalogCacheStore.save(credentials, snapshot) }
+                .onFailure { android.util.Log.w("LeSilCatalog", "Could not save catalog cache: ${it.javaClass.simpleName}") }
             runOnUiThread {
                 if (generation != connectionGeneration) return@runOnUiThread
-                movieCategories = loadedCategories
-                seriesCategories = loadedSeriesCategories
-                allMovies = loadedMovies
-                fourKCategory = loadedFourKCategory
-                recentMovies = loadedRecent
-                featuredMovie = loadedFeatured
-                featuredDetails = loadedDetails
-                if (loadedFeatured != null && loadedDetails != null) movieDetailsCache[loadedFeatured.id] = loadedDetails
-                featuredCategoryName = loadedFeaturedCategory
-                featuredSeries = sortSeries(loadedSeries, MovieSortOrder.NEWEST)
+                applyCatalog(snapshot, loadedRecent)
                 homeLoading = false
                 homeError = null
                 showHome()
@@ -399,6 +454,26 @@ class MainActivity : Activity() {
             homeErrorActionLabel = "Tentar novamente"
             showHome()
         })
+    }
+
+    private fun applyCatalog(snapshot: CatalogSnapshot, sortedMovies: List<CatalogEntry>) {
+        val (lastCategories, regularCategories) = snapshot.movieCategories
+            .filterNot { isRemovedMovieCategory(it.title) }
+            .partition { isLastMovieCategory(it.title) }
+        movieCategories = regularCategories + lastCategories
+        seriesCategories = snapshot.seriesCategories
+        allMovies = snapshot.movies
+        fourKCategory = snapshot.movieCategories.firstOrNull { isFourKCategory(it.title) }
+        recentMovies = sortedMovies
+        featuredMovie = sortedMovies.firstOrNull() ?: snapshot.movies.firstOrNull()
+        featuredDetails = snapshot.featuredDetails
+        featuredMovie?.let { featured ->
+            snapshot.featuredDetails?.let { movieDetailsCache[featured.id] = it }
+        }
+        featuredCategoryName = featuredMovie?.categoryId?.let { id ->
+            snapshot.movieCategories.firstOrNull { it.id == id }?.title
+        }
+        featuredSeries = sortSeries(snapshot.series, MovieSortOrder.NEWEST)
     }
 
     private fun clearCatalogData() {
@@ -444,11 +519,11 @@ class MainActivity : Activity() {
         errorActionLabel = homeErrorActionLabel
     )
 
-    private fun showHome() {
+    private fun showHome(focusTag: String? = null) {
         activeCatalogSection = null
         focusedFavoriteItem = null
         backAction = null
-        replace(leSilUi.home(homeData()), isHome = true)
+        replace(leSilUi.home(homeData(), focusTag), isHome = true)
     }
 
     private fun navigate(destination: String) {
@@ -527,7 +602,7 @@ class MainActivity : Activity() {
             val movieId = mediaId.toIntOrNull() ?: return
             val movie = allMovies.firstOrNull { it.id == movieId }
                 ?: CatalogEntry(movieId, progress.title, posterUrl = progress.posterUrl)
-            playMovie(movie) { showHome() }
+            playMovie(movie) { played -> showHome("home-continue:${played.id}") }
             return
         }
         val episodeId = mediaId.removePrefix("episode:").toIntOrNull() ?: return
@@ -540,7 +615,9 @@ class MainActivity : Activity() {
         fun resume(details: SeriesDetails) {
             val episode = details.seasons.asSequence().flatMap { it.episodes.asSequence() }
                 .firstOrNull { it.id == episodeId }
-            if (episode == null) openSeriesDetails(series) else playEpisode(series, details, episode)
+            if (episode == null) openSeriesDetails(series) else playEpisode(series, details, episode) { playedId ->
+                showHome("home-continue:episode:$playedId")
+            }
         }
         seriesDetailsCache[series.id]?.let { resume(it); return }
         val activeClient = client ?: return
@@ -600,6 +677,14 @@ class MainActivity : Activity() {
         screen.addView(label("Configurações", 30f))
         screen.addView(label("Catálogo", 18f))
         screen.addView(button("Editar conexão Xtream") { showLogin() })
+        screen.addView(CheckBox(this).apply {
+            text = "Atualizar catálogo ao iniciar"
+            textSize = 17f
+            setTextColor(Color.WHITE)
+            isChecked = catalogSettingsStore.refreshOnStart()
+            setOnCheckedChangeListener { _, checked -> catalogSettingsStore.setRefreshOnStart(checked) }
+        })
+        screen.addView(label("Desativado: abre o catálogo salvo. Se ainda não houver uma cópia, use Atualizar no menu.", 14f))
         screen.addView(label("Sincronizar progresso pelo NAS", 18f))
         screen.addView(label(
             progressSettingsStore.load()?.let { "NAS configurado: ${it.endpoint}" }
@@ -966,9 +1051,9 @@ class MainActivity : Activity() {
         })
     }
 
-    private fun showMovies() {
+    private fun showMovies(focusMovieId: Int? = null) {
         activeCatalogSection = "movie"
-        backAction = { if (currentMovieNav == "Filmes 4K") showHome() else showMovieCategories() }
+        backAction = { if (currentMovieNav == "Filmes 4K") showHome() else showMovies() }
         val isFavorites = selectedMovieCategoryId == favoriteMoviesCategory.id
         val effectiveSort = if (isFavorites) MovieSortOrder.TITLE_ASC else movieSortOrder
         val displayedMovies = sortMovies(movies, effectiveSort)
@@ -985,10 +1070,12 @@ class MainActivity : Activity() {
             selectedCategoryId = selectedMovieCategoryId,
             movies = displayedMovies,
             movieProgress = savedMovieProgress(),
-            initialDetails = displayedMovies.firstOrNull()?.let { movieDetailsCache[it.id] },
-            initialDetailsMovieId = displayedMovies.firstOrNull()?.id,
+            initialDetails = displayedMovies.firstOrNull { it.id == focusMovieId }
+                ?.let { movieDetailsCache[it.id] }
+                ?: displayedMovies.firstOrNull()?.let { movieDetailsCache[it.id] },
+            initialDetailsMovieId = focusMovieId ?: displayedMovies.firstOrNull()?.id,
             onCategory = { selectMovieCategory(it, currentMovieNav) },
-            onMovie = { movie -> openMovieDetails(movie) { showMovies() } },
+            onMovie = { movie -> playMovie(movie) { played -> showMovies(played.id) } },
             onMovieFocus = { movie, deliver ->
                 focusedFavoriteItem = movie
                 requestMovieDetails(movie, deliver)
@@ -996,7 +1083,8 @@ class MainActivity : Activity() {
             favoriteIds = activeProfileId?.let { favoriteStore.active(it, "movie").map(FavoriteEntry::mediaId).toSet() }.orEmpty(),
             onToggleFavorite = { movie -> toggleFavorite("movie", movie.id, movie.title, movie.posterUrl) },
             sortOrder = effectiveSort,
-            onSort = if (isFavorites) null else { order -> movieSortOrder = order; showMovies() }
+            onSort = if (isFavorites) null else { order -> movieSortOrder = order; showMovies() },
+            initialFocusMovieId = focusMovieId
         ))
     }
 
@@ -1034,7 +1122,8 @@ class MainActivity : Activity() {
         })
     }
 
-    private fun showSeries(category: CatalogEntry? = null, items: List<SeriesEntry> = featuredSeries) {
+    private fun showSeries(category: CatalogEntry? = null, items: List<SeriesEntry> = featuredSeries,
+                           focusSeriesId: Int? = null) {
         activeCatalogSection = "series"
         openingSeriesId = null
         visibleSeriesCategory = category
@@ -1042,7 +1131,7 @@ class MainActivity : Activity() {
         val isFavorites = selectedSeriesCategoryId == favoriteSeriesCategory.id
         val effectiveSort = if (isFavorites) MovieSortOrder.TITLE_ASC else seriesSortOrder
         val displayedSeries = sortSeries(items, effectiveSort)
-        backAction = { showSeriesCategories() }
+        backAction = { showSeries(visibleSeriesCategory, visibleSeries) }
         replace(leSilUi.seriesCatalog(
             title = category?.title ?: allSeriesCategory.title,
             selectedNav = "Séries",
@@ -1057,19 +1146,12 @@ class MainActivity : Activity() {
             },
             favoriteIds = activeProfileId?.let { favoriteStore.active(it, "series").map(FavoriteEntry::mediaId).toSet() }.orEmpty(),
             onToggleFavorite = { series -> toggleFavorite("series", series.id, series.title, series.coverUrl) },
-            initialDetails = displayedSeries.firstOrNull()?.let { seriesDetailsCache[it.id]?.asCatalogDetails(it) },
+            initialDetails = (displayedSeries.firstOrNull { it.id == focusSeriesId }
+                ?: displayedSeries.firstOrNull())?.let { seriesDetailsCache[it.id]?.asCatalogDetails(it) },
             sortOrder = effectiveSort,
-            onSort = if (isFavorites) null else { order -> seriesSortOrder = order; showSeries(category, items) }
+            onSort = if (isFavorites) null else { order -> seriesSortOrder = order; showSeries(category, items) },
+            initialFocusSeriesId = focusSeriesId
         ))
-    }
-
-    private fun openMovieDetails(movie: CatalogEntry, returnTo: () -> Unit) {
-        val details = movieDetailsCache[movie.id] ?: if (featuredMovie?.id == movie.id) featuredDetails else null
-        if (details == null) {
-            requestMovieDetails(movie) { loaded -> showMovieDetailsDialog(movie, loaded, returnTo) }
-            return
-        }
-        showMovieDetailsDialog(movie, details, returnTo)
     }
 
     private fun openMovieCast(movie: CatalogEntry) {
@@ -1110,26 +1192,6 @@ class MainActivity : Activity() {
             .show()
     }
 
-    private fun showMovieDetailsDialog(movie: CatalogEntry, details: MovieDetails?, returnTo: () -> Unit) {
-        val category = movie.categoryId?.let { id -> movieCategories.firstOrNull { it.id == id }?.title }
-        val description = buildList {
-            category?.let { add("Categoria: $it") }
-            movie.extension.takeIf { it.isNotBlank() }?.let { add("Contêiner informado: ${it.uppercase()}") }
-            details?.year?.let { add("Ano: $it") }
-            details?.duration?.let { add("Duração: $it") }
-            details?.genre?.let { add("Gênero: $it") }
-            details?.cast?.let { add("Elenco: $it") }
-            details?.director?.let { add("Direção: $it") }
-            details?.plot?.let { add(it) }
-        }.joinToString("\n\n").ifBlank { "O catálogo não informou outros detalhes para este título." }
-        AlertDialog.Builder(this)
-            .setTitle(details?.title?.takeIf { it.isNotBlank() } ?: movie.title)
-            .setMessage(description)
-            .setNegativeButton("Fechar", null)
-            .setPositiveButton("Assistir") { _, _ -> playMovie(movie, returnTo) }
-            .show()
-    }
-
     private fun requestMovieDetails(movie: CatalogEntry, deliver: (MovieDetails?) -> Unit) {
         val cached = movieDetailsCache[movie.id] ?: if (featuredMovie?.id == movie.id) featuredDetails else null
         if (cached != null) {
@@ -1158,6 +1220,14 @@ class MainActivity : Activity() {
     }
 
     private fun openSeriesDetails(series: SeriesEntry) {
+        val categoryAtOpen = visibleSeriesCategory
+        val itemsAtOpen = visibleSeries
+        returnFromSeriesSeasons = if (activeCatalogSection == "series") {
+            { showSeries(categoryAtOpen, itemsAtOpen, series.id) }
+        } else {
+            { showHome("home-series:${series.id}") }
+        }
+        val returnToSeries = requireNotNull(returnFromSeriesSeasons)
         openingSeriesId = series.id
         val cached = seriesDetailsCache[series.id]
         if (cached != null) {
@@ -1165,9 +1235,9 @@ class MainActivity : Activity() {
             refreshEpisodeProgressOnOpen(series, cached)
             return
         }
-        backAction = { showSeries(visibleSeriesCategory, visibleSeries) }
+        backAction = returnToSeries
         replace(leSilUi.messageScreen("Séries", series.title, "Carregando temporadas…", "Voltar") {
-            showSeries(visibleSeriesCategory, visibleSeries)
+            returnToSeries()
         })
         val activeClient = client ?: return
         worker.execute {
@@ -1182,16 +1252,18 @@ class MainActivity : Activity() {
                 }
                 else replace(leSilUi.messageScreen("Séries", series.title,
                     "Não foi possível carregar as temporadas desta série.", "Voltar") {
-                    showSeries(visibleSeriesCategory, visibleSeries)
+                    returnToSeries()
                 })
             }
         }
     }
 
-    private fun showSeriesSeasons(series: SeriesEntry, details: SeriesDetails) {
+    private fun showSeriesSeasons(series: SeriesEntry, details: SeriesDetails,
+                                  focusEpisodeId: Int? = null) {
         activeCatalogSection = null
         openingSeriesId = series.id
-        backAction = { showSeries(visibleSeriesCategory, visibleSeries) }
+        val returnToSeries = returnFromSeriesSeasons ?: { showSeries(visibleSeriesCategory, visibleSeries, series.id) }
+        backAction = returnToSeries
         val progress = activeProfileId?.let { profile ->
             details.seasons.flatMap { it.episodes }.mapNotNull { episode ->
                 progressStore.get(profile, "episode:${episode.id}")?.let { episode.id to it }
@@ -1201,13 +1273,15 @@ class MainActivity : Activity() {
         replace(leSilUi.seriesSeasons(series, shownDetails,
             episodeProgress = progress,
             onEpisode = { episode -> playEpisode(series, details, episode) },
-            onBack = { showSeries(visibleSeriesCategory, visibleSeries) }
+            onBack = returnToSeries,
+            initialFocusEpisodeId = focusEpisodeId
         ))
     }
 
     private fun refreshEpisodeProgressOnOpen(series: SeriesEntry, details: SeriesDetails) {
         val profile = activeProfileId ?: return
         val activeClient = client ?: return
+        val screenAtRequest = root.getChildAt(0)
         val episodeIds = details.seasons.flatMap { season -> season.episodes }
             .map { episode -> "episode:${episode.id}" }
         worker.execute {
@@ -1215,7 +1289,8 @@ class MainActivity : Activity() {
             syncProgressProfile(profile, WatchProgressStore.legacyProfileId(activeClient.server, activeClient.username))
             val changed = episodeIds.any { progressStore.get(profile, it) != before[it] }
             if (changed) runOnUiThread {
-                if (openingSeriesId == series.id && player == null) showSeriesSeasons(series, details)
+                if (openingSeriesId == series.id && player == null &&
+                    root.getChildAt(0) === screenAtRequest) showSeriesSeasons(series, details)
             }
         }
     }
@@ -1294,6 +1369,19 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun normalizedCategoryTitle(title: String): String =
+        java.text.Normalizer.normalize(title, java.text.Normalizer.Form.NFD)
+            .replace(Regex("\\p{Mn}+"), "")
+            .lowercase(Locale.ROOT)
+            .replace(Regex("[^a-z0-9]+"), " ")
+            .trim()
+
+    private fun isLastMovieCategory(title: String): Boolean =
+        Regex("\\bxxx\\b.*\\bbella da semana\\b").containsMatchIn(normalizedCategoryTitle(title))
+
+    private fun isRemovedMovieCategory(title: String): Boolean =
+        Regex("\\bxxx\\b.*\\blgbt 18\\b").containsMatchIn(normalizedCategoryTitle(title))
+
     private fun isFourKCategory(name: String): Boolean {
         val normalized = java.text.Normalizer.normalize(name.trim(), java.text.Normalizer.Form.NFD)
             .replace(Regex("\\p{Mn}+"), "")
@@ -1305,7 +1393,8 @@ class MainActivity : Activity() {
             normalized == "4k" || normalized == "uhd"
     }
 
-    private fun playMovie(movie: CatalogEntry, returnTo: () -> Unit = { showHome() }) {
+    private fun playMovie(movie: CatalogEntry,
+                          returnTo: (CatalogEntry) -> Unit = { showHome() }) {
         val c = client ?: return
         val url = try { c.movieUrl(movie) } catch (e: Exception) { msg("Formato de arquivo não reconhecido"); return }
         val playbackList = if (movies.any { it.id == movie.id }) sortMovies(movies, movieSortOrder)
@@ -1316,7 +1405,8 @@ class MainActivity : Activity() {
             nextMovie?.let { next -> { playMovie(next, returnTo) } })
     }
 
-    private fun playEpisode(series: SeriesEntry, details: SeriesDetails, episode: EpisodeEntry) {
+    private fun playEpisode(series: SeriesEntry, details: SeriesDetails, episode: EpisodeEntry,
+                            returnTo: (Int) -> Unit = { showSeriesSeasons(series, details, it) }) {
         val c = client ?: return
         val url = try { c.episodeUrl(episode) } catch (e: Exception) {
             msg("Formato do episódio não reconhecido")
@@ -1334,15 +1424,15 @@ class MainActivity : Activity() {
             AlertDialog.Builder(this).setTitle(series.title)
                 .setMessage(details.cast?.takeIf { it.isNotBlank() } ?: "Elenco não informado pelo servidor.")
                 .setPositiveButton("Fechar", null).show()
-        }, { showSeriesSeasons(series, details) },
-            nextEpisode?.let { next -> { playEpisode(series, details, next) } },
+        }, { played -> returnTo(played.id) },
+            nextEpisode?.let { next -> { playEpisode(series, details, next, returnTo) } },
             autoPlayNextOnEnd = true,
             playerTitle = series.title,
             playerSubtitle = "Temporada: ${episode.seasonNumber} | Episódio: ${episode.number}")
     }
 
     private fun playMedia(movie: CatalogEntry, url: String, progressId: String,
-                          showCast: () -> Unit, returnTo: () -> Unit,
+                          showCast: () -> Unit, returnTo: (CatalogEntry) -> Unit,
                           playNext: (() -> Unit)? = null,
                           autoPlayNextOnEnd: Boolean = false,
                           playerTitle: String = movie.title,
@@ -1799,10 +1889,11 @@ class MainActivity : Activity() {
     }
 
     private fun leavePlayer() {
+        val played = currentPlayingMovie
         stopPlayer()
         val destination = returnFromPlayer
         returnFromPlayer = null
-        (destination ?: { showHome() }).invoke()
+        if (played != null && destination != null) destination(played) else showHome()
     }
 
     private fun cancelFavoriteHold() {
