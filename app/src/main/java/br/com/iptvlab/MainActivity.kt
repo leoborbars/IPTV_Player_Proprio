@@ -109,6 +109,8 @@ class MainActivity : Activity() {
     private var currentMovieNav = "Filmes"
     private var activeCatalogSection: String? = null
     private var focusedFavoriteItem: CatalogEntry? = null
+    private var searchQuery = ""
+    private var searchReturnAction: (() -> Unit)? = null
     private var favoriteHoldRunnable: Runnable? = null
     private var favoriteHoldTriggered = false
     private var movieSortOrder = MovieSortOrder.NEWEST
@@ -532,6 +534,31 @@ class MainActivity : Activity() {
         replace(leSilUi.home(homeData(), focusTag), isHome = true)
     }
 
+    private fun showSearch(returnTo: () -> Unit, initialQuery: String = "",
+                           focusMovieId: Int? = null, focusSeriesId: Int? = null) {
+        searchReturnAction = returnTo
+        searchQuery = initialQuery
+        activeCatalogSection = "search"
+        backAction = returnTo
+        replace(LeSilSearchScreen(
+            context = this,
+            movies = recentMovies.ifEmpty { allMovies },
+            series = featuredSeries,
+            movieProgress = savedMovieProgress(),
+            initialQuery = initialQuery,
+            onQueryChanged = { searchQuery = it },
+            onMovie = { movie -> playMovie(movie) { played ->
+                showSearch(returnTo, searchQuery, focusMovieId = played.id)
+            } },
+            onSeries = ::openSeriesDetails,
+            onHoldMovie = { movie -> showListActions("movie", movie.id, movie.title, movie.posterUrl) },
+            onHoldSeries = { series -> showListActions("series", series.id, series.title, series.coverUrl) },
+            onBack = returnTo,
+            focusMovieId = focusMovieId,
+            focusSeriesId = focusSeriesId
+        ).create())
+    }
+
     private fun navigate(destination: String) {
         when (destination) {
             "Início" -> showHome()
@@ -673,7 +700,9 @@ class MainActivity : Activity() {
             initialDetailsMovieId = entries.firstOrNull()?.id,
             onCategory = {},
             onMovie = { movie -> playMovie(movie) { showHome() } },
-            onMovieFocus = ::requestMovieDetails
+            onMovieFocus = ::requestMovieDetails,
+            onSearch = { showSearch({ showContinueCatalog() }) },
+            onBack = { showHome() }
         ))
     }
 
@@ -1248,6 +1277,11 @@ class MainActivity : Activity() {
                 focusedFavoriteItem = movie
                 requestMovieDetails(movie, deliver)
             },
+            onSearch = {
+                val focusedId = focusedFavoriteItem?.id ?: focusMovieId
+                showSearch({ showMovies(focusedId) })
+            },
+            onBack = { if (currentMovieNav == "Filmes 4K") showHome() else showMovies() },
             favoriteIds = activeProfileId?.let { profile ->
                 mediaListStore.activeItems(profile, mediaListStore.selected(profile).listId, "movie")
                     .map(MediaListItem::mediaId).toSet()
@@ -1317,6 +1351,11 @@ class MainActivity : Activity() {
                 focusedFavoriteItem = CatalogEntry(series.id, series.title, posterUrl = series.coverUrl)
                 requestSeriesInfo(series) { info -> deliver(info?.asCatalogDetails(series)) }
             },
+            onSearch = {
+                val focusedId = focusedFavoriteItem?.id ?: focusSeriesId
+                showSearch({ showSeries(category, items, focusedId) })
+            },
+            onBack = { showSeries(category, items) },
             favoriteIds = activeProfileId?.let { profile ->
                 mediaListStore.activeItems(profile, mediaListStore.selected(profile).listId, "series")
                     .map(MediaListItem::mediaId).toSet()
@@ -1401,6 +1440,8 @@ class MainActivity : Activity() {
         val itemsAtOpen = visibleSeries
         returnFromSeriesSeasons = if (activeCatalogSection == "series") {
             { showSeries(categoryAtOpen, itemsAtOpen, series.id) }
+        } else if (activeCatalogSection == "search") {
+            { showSearch(searchReturnAction ?: { showHome() }, searchQuery, focusSeriesId = series.id) }
         } else {
             { showHome("home-series:${series.id}") }
         }
@@ -1452,6 +1493,8 @@ class MainActivity : Activity() {
             onEpisode = { episode -> playEpisode(series, details, episode) },
             onEpisodeHold = { episode -> showListActions("episode", episode.id, episode.title,
                 episode.imageUrl, series.id) },
+            onAddToList = { chooseListForItem("series", series.id, series.title,
+                shownDetails.coverUrl ?: series.coverUrl, null) },
             onBack = returnToSeries,
             initialFocusEpisodeId = focusEpisodeId
         ))

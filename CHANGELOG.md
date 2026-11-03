@@ -1,5 +1,20 @@
 # Changelog
 
+## Navegação e listas — 03/11/2026
+
+- Adicionado **Voltar** ao lado do nome da categoria em Filmes e Séries, junto de **Trocar lista** nas telas de Favoritos.
+- Na tela de temporadas, o botão **Temporadas** foi substituído por **Adicionar a uma lista**, que abre a escolha de lista para a série.
+
+## Busca integrada — 02/11/2026
+
+- Substituído o diálogo de busca por uma tela com teclado para controle remoto e resultados atualizados a cada tecla, mantendo as capas verticais.
+- Corrigida a rolagem das linhas de resultados pelo controle, adicionada a ação de segurar uma capa por 3 segundos para escolher a lista de filmes ou séries e reforçado o recarregamento de capas visíveis que ficaram vazias.
+- Corrigido o teclado da busca no celular: um toque já insere a letra, sem exigir um segundo toque após receber o foco.
+
+## Atualização do ícone — 02/11/2026
+
+- Aplicada a arte de `Fotos_iptvplayer/icone2.png` ao ícone do launcher, ao banner da TV e às telas internas.
+
 ## 0.3-lesil — 26/10/2026
 
 - Rebatizado o aplicativo como **Le&Sil Stream**.

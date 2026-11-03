@@ -13,7 +13,6 @@ import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.SystemClock
 import android.text.SpannableStringBuilder
-import android.text.InputType
 import android.text.style.ForegroundColorSpan
 import android.text.style.RelativeSizeSpan
 import android.view.Gravity
@@ -24,7 +23,6 @@ import android.view.ViewGroup
 import android.view.ViewConfiguration
 import android.view.animation.DecelerateInterpolator
 import android.widget.AbsListView
-import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.GridView
 import android.widget.HorizontalScrollView
@@ -261,6 +259,8 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
         onCategory: (CatalogEntry) -> Unit,
         onMovie: (CatalogEntry) -> Unit,
         onMovieFocus: (CatalogEntry, (MovieDetails?) -> Unit) -> Unit,
+        onSearch: () -> Unit,
+        onBack: () -> Unit,
         movieProgress: Map<Int, WatchProgress> = emptyMap(),
         favoriteIds: Set<Int> = emptySet(),
         onToggleFavorite: ((CatalogEntry) -> Boolean)? = null,
@@ -294,14 +294,14 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
                 .setNegativeButton("Cancelar", null)
                 .show()
         }
-        var activeFilter = ""
         val searchButton = catalogIconButton(android.R.drawable.ic_menu_search,
-            if (seriesMode) "Buscar série" else "Buscar filme") { }
+            if (seriesMode) "Buscar série" else "Buscar filme", onSearch)
         filterButton.visibility = if (onSort == null) View.GONE else View.VISIBLE
         val listButton = actionButton("Trocar lista", false) { onChangeList?.invoke() }.apply {
             textSize = 13f
             visibility = if (onChangeList == null) View.GONE else View.VISIBLE
         }
+        val backButton = actionButton("Voltar", false, onBack).apply { textSize = 13f }
         val catalogHorizontalInsetDp = 20
         val rightmostPosterInsetDp = (
             screenWidthDp - COLLAPSED_SIDEBAR_WIDTH_DP - catalogHorizontalInsetDp -
@@ -326,16 +326,20 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
                 textSize = 16f
                 gravity = Gravity.CENTER_VERTICAL
                 setPadding(dp(2), 0, 0, 0)
+                maxWidth = dp((screenWidthDp * 0.40f).toInt())
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
             }
+            addView(heading, LinearLayout.LayoutParams(-2, -1))
             if (onChangeList != null) {
-                addView(heading, LinearLayout.LayoutParams(-2, -1))
                 addView(listButton, LinearLayout.LayoutParams(dp(116), dp(38)).apply {
                     marginStart = dp(12)
                 })
-                addView(View(context), LinearLayout.LayoutParams(0, 1, 1f))
-            } else {
-                addView(heading, LinearLayout.LayoutParams(0, -1, 1f))
             }
+            addView(backButton, LinearLayout.LayoutParams(dp(76), dp(38)).apply {
+                marginStart = dp(8)
+            })
+            addView(View(context), LinearLayout.LayoutParams(0, 1, 1f))
             addView(hero.position, LinearLayout.LayoutParams(-2, -2).apply {
                 marginStart = dp(10)
                 marginEnd = dp((rightmostPosterInsetDp - catalogHorizontalInsetDp).coerceAtLeast(0))
@@ -549,14 +553,7 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
                 }
                 KeyEvent.KEYCODE_DPAD_UP -> {
                     if (position < GRID_COLUMNS) {
-                        val control = if (column == GRID_COLUMNS - 1) {
-                            when {
-                                onSort != null -> filterButton
-                                onChangeList != null -> listButton
-                                else -> searchButton
-                            }
-                        } else searchButton
-                        if (control.requestFocus()) {
+                        if (backButton.requestFocus()) {
                             // A pending GridView retry must not pull focus back from the toolbar.
                             focusRequestGeneration++
                             deferMovieChildFocusUntil = 0L
@@ -669,75 +666,49 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
             grid.postDelayed({ if (refreshRequest == posterRefreshGeneration) refreshVisiblePosters() }, 350)
             grid.postDelayed({ if (refreshRequest == posterRefreshGeneration) refreshVisiblePosters() }, 2200)
         }
-        searchButton.setOnClickListener {
-            lateinit var dialog: AlertDialog
-            val input = EditText(context).apply {
-                hint = if (seriesMode) "Digite o título da série" else "Digite o título do filme"
-                setSingleLine(true)
-                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
-                imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH or
-                    android.view.inputmethod.EditorInfo.IME_FLAG_NO_EXTRACT_UI or
-                    android.view.inputmethod.EditorInfo.IME_FLAG_NO_FULLSCREEN
-                setText(activeFilter)
-                setSelection(text.length)
-                setTextColor(WHITE)
-                setHintTextColor(SECONDARY)
-                setPadding(dp(14), dp(8), dp(14), dp(8))
-                background = rounded(0xFF0E367B.toInt(), 0xFF72B8FF.toInt(), 10)
-                setOnEditorActionListener { _, actionId, _ ->
-                    if (actionId == android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH) {
-                        dialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick()
-                        true
-                    } else false
-                }
-            }
-            dialog = AlertDialog.Builder(context)
-                .setTitle("Buscar no catálogo")
-                .setView(input)
-                .setPositiveButton("Buscar") { _, _ ->
-                    activeFilter = input.text.toString().trim()
-                    populate(activeFilter)
-                    grid.setSelection(0)
-                }
-                .setNeutralButton("Limpar") { _, _ ->
-                    activeFilter = ""
-                    populate("")
-                    grid.setSelection(0)
-                }
-                .setNegativeButton("Cancelar", null)
-                .create()
-            dialog.window?.setSoftInputMode(
-                android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE or
-                    android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
-            )
-            dialog.setOnShowListener {
-                input.requestFocus()
-                input.post {
-                    (context.getSystemService(Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager)
-                        ?.showSoftInput(input, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
-                }
-            }
-            dialog.show()
-        }
         searchButton.id = View.generateViewId()
         filterButton.id = View.generateViewId()
         listButton.id = View.generateViewId()
+        backButton.id = View.generateViewId()
         searchButton.nextFocusRightId = if (onSort != null) filterButton.id else listButton.id
         filterButton.nextFocusLeftId = searchButton.id
+        filterButton.nextFocusDownId = searchButton.id
+        backButton.nextFocusUpId = searchButton.id
+        searchButton.nextFocusDownId = backButton.id
+        if (onSort != null) searchButton.nextFocusUpId = filterButton.id
         listButton.nextFocusLeftId = searchButton.id
-        listOf(searchButton, filterButton, listButton).forEach { button ->
+        if (onChangeList != null) {
+            listButton.nextFocusUpId = searchButton.id
+        }
+        listOf(searchButton, filterButton, listButton, backButton).forEach { button ->
             button.setOnKeyListener { _, keyCode, event ->
                 if (event.action != KeyEvent.ACTION_DOWN) return@setOnKeyListener false
                 when (keyCode) {
-                    KeyEvent.KEYCODE_DPAD_DOWN -> requestMovieFocus(focusedMoviePosition.coerceAtMost(GRID_COLUMNS - 1))
-                    KeyEvent.KEYCODE_DPAD_LEFT -> if (button === filterButton || button === listButton) searchButton.requestFocus() else false
+                    KeyEvent.KEYCODE_DPAD_UP -> when (button) {
+                        backButton -> searchButton.requestFocus()
+                        searchButton -> if (onSort != null) filterButton.requestFocus() else true
+                        listButton -> searchButton.requestFocus()
+                        else -> true
+                    }
+                    KeyEvent.KEYCODE_DPAD_DOWN -> when (button) {
+                        filterButton -> searchButton.requestFocus()
+                        searchButton -> backButton.requestFocus()
+                        else -> requestMovieFocus(focusedMoviePosition.coerceAtMost(GRID_COLUMNS - 1))
+                    }
+                    KeyEvent.KEYCODE_DPAD_LEFT -> when (button) {
+                        filterButton, listButton -> searchButton.requestFocus()
+                        backButton -> (if (onChangeList != null) listButton else searchButton).requestFocus()
+                        else -> backButton.requestFocus()
+                    }
                     KeyEvent.KEYCODE_DPAD_RIGHT -> if (button === searchButton) {
                         when {
                             onSort != null -> filterButton.requestFocus()
                             onChangeList != null -> listButton.requestFocus()
-                            else -> true
+                            else -> backButton.requestFocus()
                         }
-                    } else true
+                    } else if (button === listButton && onChangeList != null) backButton.requestFocus()
+                    else if (button === backButton) searchButton.requestFocus()
+                    else true
                     else -> false
                 }
             }
@@ -752,6 +723,7 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
             onContentLeftEdge = {
                 val focused = content.findFocus()
                 focused !== searchButton && focused !== filterButton && focused !== listButton &&
+                    focused !== backButton &&
                     focusedMoviePosition % GRID_COLUMNS == 0
             },
             onContentRefocus = { requestMovieFocus(focusedMoviePosition) },
@@ -768,6 +740,8 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
         onCategory: (CatalogEntry) -> Unit,
         onSeries: (SeriesEntry) -> Unit,
         onSeriesFocus: (SeriesEntry, (MovieDetails?) -> Unit) -> Unit,
+        onSearch: () -> Unit,
+        onBack: () -> Unit,
         favoriteIds: Set<Int> = emptySet(),
         onToggleFavorite: ((SeriesEntry) -> Boolean)? = null,
         initialDetails: MovieDetails? = null,
@@ -794,6 +768,8 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
             onMovieFocus = { entry, deliver ->
                 byId[entry.id]?.let { onSeriesFocus(it, deliver) } ?: deliver(null)
             },
+            onSearch = onSearch,
+            onBack = onBack,
             favoriteIds = favoriteIds,
             onToggleFavorite = onToggleFavorite?.let { toggle ->
                 { entry -> byId[entry.id]?.let(toggle) ?: false }
@@ -811,6 +787,7 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
         episodeProgress: Map<Int, WatchProgress>,
         onEpisode: (EpisodeEntry) -> Unit,
         onEpisodeHold: (EpisodeEntry) -> Unit,
+        onAddToList: () -> Unit,
         onBack: () -> Unit,
         initialFocusEpisodeId: Int? = null
     ): View {
@@ -908,8 +885,8 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
             ?: "Sem episódios", true) { firstEpisode?.let(onEpisode) }
         play.id = View.generateViewId()
         actions.addView(play, LinearLayout.LayoutParams(-2, dp(40)).apply { marginEnd = dp(10) })
-        val seasonsButton = action("Temporadas", false) { }
-        actions.addView(seasonsButton, LinearLayout.LayoutParams(-2, dp(40)).apply { marginEnd = dp(10) })
+        actions.addView(action("Adicionar a uma lista", false, onAddToList),
+            LinearLayout.LayoutParams(-2, dp(40)).apply { marginEnd = dp(10) })
         actions.addView(action("Voltar", false, onBack), LinearLayout.LayoutParams(-2, dp(40)))
         body.addView(actions, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(28) })
 
@@ -1079,9 +1056,6 @@ class LeSilHomeScreen(private val context: Context, private val actions: LeSilHo
             addView(body)
         }
         val firstCard = seasonRows.firstNotNullOfOrNull { it.firstOrNull() }
-        seasonsButton.setOnClickListener {
-            if (firstCard?.requestFocus() == true) scroll.smoothScrollTo(0, dp(185))
-        }
         if (firstCard != null) {
             for (index in 0 until actions.childCount) {
                 actions.getChildAt(index).apply {
